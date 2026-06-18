@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Grasp Rat Gold Runner
 // @namespace    https://grasp-rat-game.h-e.top/
-// @version      1.6.14
+// @version      1.6.15
 // @description  Auto collect coin drops with HP-drop leave safety and combat dodge support.
 // @match        https://grasp-rat-game.h-e.top/*
 // @run-at       document-end
@@ -45,6 +45,12 @@
     const COMBAT_DODGE_SCAN_CM = 36000;
     const COMBAT_DODGE_SPEED_CMPS = 1300;
     const COMBAT_DODGE_SWITCH_MS = 650;
+    const COMBAT_SPACING_SCAN_CM = 19000;
+    const COMBAT_RANGE_HARD_MIN_CM = 8500;
+    const COMBAT_RANGE_MIN_CM = 10000;
+    const COMBAT_RANGE_IDEAL_CM = 12500;
+    const COMBAT_RANGE_MAX_CM = 15000;
+    const COMBAT_CLOSE_PROJECTILE_PRESSURE = 520;
     const PROJECTILE_MEMORY_MS = 1800;
     const MOVING_ENEMY_MEMORY_MS = 10000;
     const ENEMY_MOVE_EPSILON_CM = 30;
@@ -626,6 +632,8 @@
         combatRisk: "clear",
         combatProjectiles: 0,
         combatTargets: 0,
+        combatSpacingState: "none",
+        combatSpacingMeters: null,
         lastCombatDodge: { dx: 0, dy: 0, score: 0 },
         lastCombatSwitchAt: 0,
         combatManualOverride: false,
@@ -1309,6 +1317,10 @@
           }));
       }
 
+      function combatSpacingEnemies(me) {
+        return liveEnemies(me, COMBAT_SPACING_SCAN_CM);
+      }
+
       function projectileSources() {
         const directKeys = ["bullets", "projectiles", "shots", "missiles", "arrows"];
         const sources = [];
@@ -1502,7 +1514,69 @@
         return perpRisk + nearRisk;
       }
 
-      function scoreCombatDirection(me, dir, projectiles, enemies) {
+      function combatProjectilePressure(projectiles, me) {
+        const point = { x: Number(me.x), y: Number(me.y) };
+        let pressure = 0;
+        for (const projectile of projectiles.slice(0, 5)) {
+          pressure += projectileRisk(projectile, point, 0.1);
+          pressure += projectileRisk(projectile, point, 0.35) * 0.75;
+        }
+        return pressure;
+      }
+
+      function combatSpacingState(enemies) {
+        const nearest = (enemies || []).find(enemy => Number.isFinite(Number(enemy.dist)));
+        if (!nearest) return { state: "none", distance: Infinity };
+        const distance = Number(nearest.dist);
+        if (distance < COMBAT_RANGE_MIN_CM) return { state: "too-close", distance };
+        if (distance > COMBAT_RANGE_MAX_CM) return { state: "too-far", distance };
+        return { state: "band", distance };
+      }
+
+      function combatRangeError(dist) {
+        if (!Number.isFinite(dist)) return 0;
+        if (dist < COMBAT_RANGE_HARD_MIN_CM) {
+          return (COMBAT_RANGE_MIN_CM - dist) * 1.8
+            + (COMBAT_RANGE_HARD_MIN_CM - dist) * 3.2
+            + 4200;
+        }
+        if (dist < COMBAT_RANGE_MIN_CM) return (COMBAT_RANGE_MIN_CM - dist) * 1.8 + 900;
+        if (dist > COMBAT_RANGE_MAX_CM) return (dist - COMBAT_RANGE_MAX_CM) * 0.72;
+        return Math.abs(dist - COMBAT_RANGE_IDEAL_CM) * 0.16;
+      }
+
+      function combatSpacingScore(me, dir, enemies) {
+        if (!enemies || !enemies.length) return 0;
+        const next = {
+          x: Number(me.x) + dir.dx * COMBAT_DODGE_SPEED_CMPS,
+          y: Number(me.y) + dir.dy * COMBAT_DODGE_SPEED_CMPS
+        };
+        let score = 0;
+        enemies.slice(0, 3).forEach((enemy, index) => {
+          const currentDist = Number(enemy.dist);
+          const nextDist = Math.hypot(next.x - Number(enemy.x), next.y - Number(enemy.y));
+          if (!Number.isFinite(currentDist) || !Number.isFinite(nextDist)) return;
+          const weight = index === 0 ? 1 : index === 1 ? 0.48 : 0.26;
+          const improvement = combatRangeError(currentDist) - combatRangeError(nextDist);
+          score += improvement * weight / 13;
+
+          if (nextDist < COMBAT_RANGE_HARD_MIN_CM) {
+            score -= (720 + (COMBAT_RANGE_HARD_MIN_CM - nextDist) / 12) * weight;
+          } else if (nextDist < COMBAT_RANGE_MIN_CM) {
+            score -= (310 + (COMBAT_RANGE_MIN_CM - nextDist) / 24) * weight;
+          } else if (nextDist <= COMBAT_RANGE_MAX_CM) {
+            score += (190 - Math.abs(nextDist - COMBAT_RANGE_IDEAL_CM) / 44) * weight;
+          } else {
+            score -= Math.min(180, (nextDist - COMBAT_RANGE_MAX_CM) / 42) * weight;
+          }
+
+          if (currentDist < COMBAT_RANGE_MIN_CM && nextDist < currentDist - 80) score -= 420 * weight;
+          if (currentDist > COMBAT_RANGE_MAX_CM && nextDist > currentDist + 80) score -= 210 * weight;
+        });
+        return score;
+      }
+
+      function scoreCombatDirection(me, dir, projectiles, spacingEnemies, options) {
         const horizons = [0.25, 0.5, 0.85, 1.2];
         let score = 0;
         for (const seconds of horizons) {
@@ -1513,14 +1587,12 @@
           for (const projectile of projectiles) {
             score -= projectileRisk(projectile, point, seconds);
           }
-          for (const enemy of enemies) {
-            const dist = Math.hypot(point.x - Number(enemy.x), point.y - Number(enemy.y));
-            score += Math.min(22000, dist) / 900;
-          }
         }
+        const spacingWeight = options && Number.isFinite(options.spacingWeight) ? options.spacingWeight : 1;
+        score += combatSpacingScore(me, dir, spacingEnemies) * spacingWeight;
         const last = runner.lastCombatDodge || { dx: 0, dy: 0 };
         if (dir.dx === last.dx && dir.dy === last.dy) {
-          score += 180;
+          score += projectiles.length ? 180 : 90;
         } else {
           score -= Date.now() - runner.lastCombatSwitchAt < COMBAT_DODGE_SWITCH_MS ? 210 : 70;
           if (dir.dx === -last.dx && dir.dy === -last.dy) score -= 180;
@@ -1528,8 +1600,11 @@
         return score;
       }
 
-      function chooseCombatDodge(me, projectiles, enemies) {
-        if (!projectiles.length) return { dx: 0, dy: 0, score: 0, count: 0 };
+      function chooseCombatDodge(me, projectiles, spacingEnemies) {
+        const spacing = combatSpacingState(spacingEnemies);
+        if (!projectiles.length && spacing.state !== "too-close" && spacing.state !== "too-far") {
+          return { dx: 0, dy: 0, score: 0, count: 0, spacingState: spacing.state, spacingDistance: spacing.distance };
+        }
         const dirs = [
           { dx: 0, dy: 0 },
           { dx: 1, dy: 0 },
@@ -1541,15 +1616,39 @@
           { dx: -1, dy: 1 },
           { dx: -1, dy: -1 }
         ];
-        let best = { dx: 0, dy: 0, score: -Infinity, count: projectiles.length };
+        const pressure = combatProjectilePressure(projectiles, me);
+        const closeProjectile = pressure >= COMBAT_CLOSE_PROJECTILE_PRESSURE
+          || projectiles.some(projectile => projectile.dist < COMBAT_RANGE_MIN_CM);
+        const options = {
+          spacingWeight: closeProjectile ? 0.42 : projectiles.length ? 0.86 : 1.35
+        };
+        let best = {
+          dx: 0,
+          dy: 0,
+          score: -Infinity,
+          count: projectiles.length,
+          spacingState: spacing.state,
+          spacingDistance: spacing.distance
+        };
         for (const dir of dirs) {
-          const score = scoreCombatDirection(me, dir, projectiles, enemies);
-          if (score > best.score) best = { ...dir, score, count: projectiles.length };
+          const score = scoreCombatDirection(me, dir, projectiles, spacingEnemies, options);
+          if (score > best.score) {
+            best = { ...dir, score, count: projectiles.length, spacingState: spacing.state, spacingDistance: spacing.distance };
+          }
         }
         const last = runner.lastCombatDodge || { dx: 0, dy: 0, score: -Infinity };
         if ((best.dx !== last.dx || best.dy !== last.dy) && Date.now() - runner.lastCombatSwitchAt < COMBAT_DODGE_SWITCH_MS) {
-          const lastScore = scoreCombatDirection(me, last, projectiles, enemies);
-          if (lastScore > best.score - 260) best = { dx: last.dx, dy: last.dy, score: lastScore, count: projectiles.length };
+          const lastScore = scoreCombatDirection(me, last, projectiles, spacingEnemies, options);
+          if (lastScore > best.score - 260) {
+            best = {
+              dx: last.dx,
+              dy: last.dy,
+              score: lastScore,
+              count: projectiles.length,
+              spacingState: spacing.state,
+              spacingDistance: spacing.distance
+            };
+          }
         }
         return best;
       }
@@ -2335,6 +2434,8 @@
         runner.combatProjectiles = 0;
         runner.combatTargets = 0;
         runner.combatRisk = next ? "watch" : "clear";
+        runner.combatSpacingState = "none";
+        runner.combatSpacingMeters = null;
         if (next) {
           clearScriptMoveKeys(true);
           push("临时交战已开启，暂停金币巡航" + (clearedManualTarget ? "，已取消右键目标" : ""));
@@ -2361,7 +2462,7 @@
         return outmatched ? "outmatched" : "clear";
       }
 
-      function applyCombatDodge(me, enemies) {
+      function applyCombatDodge(me, spacingEnemies) {
         const now = Date.now();
         const projectiles = activeProjectiles(me, now);
         runner.combatProjectiles = projectiles.length;
@@ -2370,19 +2471,25 @@
           clearScriptMoveKeys(true);
           runner.combatManualOverride = true;
           runner.lastMoveMode = "manual-combat";
+          runner.combatSpacingState = combatSpacingState(spacingEnemies).state;
+          runner.combatSpacingMeters = null;
           return projectiles.length;
         }
         runner.combatManualOverride = false;
-        const dodge = chooseCombatDodge(me, projectiles, enemies);
+        const dodge = chooseCombatDodge(me, projectiles, spacingEnemies);
         const changed = dodge.dx !== runner.lastCombatDodge.dx || dodge.dy !== runner.lastCombatDodge.dy;
         if (changed) runner.lastCombatSwitchAt = now;
         runner.lastCombatDodge = dodge;
+        runner.combatSpacingState = dodge.spacingState || "none";
+        runner.combatSpacingMeters = Number.isFinite(dodge.spacingDistance)
+          ? Math.round(dodge.spacingDistance / 100)
+          : null;
         if (dodge.dx === 0 && dodge.dy === 0) {
           setVelocity(0, 0, { preserveUser: true });
-          runner.lastMoveMode = "combat-hold";
+          runner.lastMoveMode = projectiles.length ? "combat-hold" : "combat-spacing-hold";
         } else {
           setVelocity(dodge.dx, dodge.dy, { preserveUser: true });
-          runner.lastMoveMode = "combat-dodge";
+          runner.lastMoveMode = projectiles.length ? "combat-dodge" : "combat-spacing";
         }
         return projectiles.length;
       }
@@ -2395,6 +2502,7 @@
         runner.navTarget = null;
 
         const enemies = combatEnemies(me);
+        const spacingEnemies = combatSpacingEnemies(me);
         runner.combatTargets = enemies.filter(enemy => enemy.hpForCombat > 0 && enemy.hpForCombat < hp).length;
 
         if (hp <= COMBAT_LOW_HP) {
@@ -2415,18 +2523,25 @@
 
         if (runner.manualTarget) {
           runner.combatProjectiles = activeProjectiles(me, Date.now()).length;
+          runner.combatSpacingState = combatSpacingState(spacingEnemies).state;
+          runner.combatSpacingMeters = null;
           runner.combatManualOverride = false;
           if (driveManualTarget(me, "临时交战：前往", { preserveUser: true, respectUserInput: true })) {
             return true;
           }
         }
 
-        const projectileCount = applyCombatDodge(me, enemies);
+        const projectileCount = applyCombatDodge(me, spacingEnemies);
+        const spacingText = runner.combatSpacingMeters === null
+          ? ""
+          : "，距离 " + runner.combatSpacingMeters + "m";
         runner.lastAction = runner.combatManualOverride
           ? "临时交战：手动 WASD 接管，自动躲避暂停，标记 " + runner.combatTargets + " 个低血目标"
           : projectileCount
-          ? "临时交战：躲避 " + projectileCount + " 个弹体，标记 " + runner.combatTargets + " 个低血目标"
-          : "临时交战：未识别到弹体，保持观察，标记 " + runner.combatTargets + " 个低血目标";
+          ? "临时交战：躲避 " + projectileCount + " 个弹体" + spacingText + "，标记 " + runner.combatTargets + " 个低血目标"
+          : runner.lastMoveMode === "combat-spacing"
+          ? "临时交战：调整距离到100-150m" + spacingText + "，标记 " + runner.combatTargets + " 个低血目标"
+          : "临时交战：未识别到弹体，保持观察" + spacingText + "，标记 " + runner.combatTargets + " 个低血目标";
         return true;
       }
 
