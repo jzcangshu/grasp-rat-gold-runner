@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Grasp Rat Gold Runner
 // @namespace    https://grasp-rat-game.h-e.top/
-// @version      1.6.15
+// @version      1.6.16
 // @description  Auto collect coin drops with HP-drop leave safety and combat dodge support.
 // @match        https://grasp-rat-game.h-e.top/*
 // @run-at       document-end
@@ -51,6 +51,14 @@
     const COMBAT_RANGE_IDEAL_CM = 12500;
     const COMBAT_RANGE_MAX_CM = 15000;
     const COMBAT_CLOSE_PROJECTILE_PRESSURE = 520;
+    const AUTO_FIRE_RANGE_CM = 15000;
+    const AUTO_FIRE_DEFAULT_PROJECTILE_SPEED_CMPS = 10000;
+    const AUTO_FIRE_MAX_RATE_MS = 100;
+    const AUTO_FIRE_LOOP_MS = 100;
+    const AUTO_FIRE_STAMINA_COST_MILLI = 500;
+    const AUTO_FIRE_STAMINA_MAX_MILLI = 10000;
+    const AUTO_FIRE_LEAD_MIN_MS = 60;
+    const AUTO_FIRE_LEAD_MAX_MS = 1150;
     const PROJECTILE_MEMORY_MS = 1800;
     const MOVING_ENEMY_MEMORY_MS = 10000;
     const ENEMY_MOVE_EPSILON_CM = 30;
@@ -162,6 +170,7 @@
         '      <button type="button" data-crgr="start">启动</button>',
         '      <button type="button" data-crgr="stop">停止</button>',
         '      <button type="button" data-crgr="combat">临时交战</button>',
+        '      <button type="button" data-crgr="auto-fire">自动射击</button>',
         '      <button type="button" data-crgr="leave">离开</button>',
         '    </div>',
         '    <pre data-crgr="status">READY</pre>',
@@ -270,7 +279,7 @@
           transform: translateX(-50%);
           width: min(720px, calc(100% - 40px));
           display: grid;
-          grid-template-columns: repeat(4, 1fr);
+          grid-template-columns: repeat(5, 1fr);
           gap: 8px;
         }
         #${PANEL_ID} .crgr-grid div,
@@ -459,6 +468,7 @@
         #${PANEL_ID} button[data-crgr="start"] { border-color: rgba(74, 222, 128, .45); color: #bbf7d0; }
         #${PANEL_ID} button[data-crgr="stop"] { border-color: rgba(251, 191, 36, .45); color: #fde68a; }
         #${PANEL_ID} button[data-crgr="combat"] { border-color: rgba(248, 113, 113, .42); color: #fecaca; }
+        #${PANEL_ID} button[data-crgr="auto-fire"] { border-color: rgba(56, 189, 248, .42); color: #bae6fd; }
         #${PANEL_ID} button[data-crgr="hunt"] { border-color: rgba(250, 204, 21, .42); color: #fef3c7; }
         #${PANEL_ID} button[data-crgr="combat"].active {
           color: #fff7ed;
@@ -469,6 +479,11 @@
           color: #fffbeb;
           background: rgba(113, 63, 18, .44);
           box-shadow: inset 0 0 18px rgba(250, 204, 21, .14), 0 0 18px rgba(250, 204, 21, .08);
+        }
+        #${PANEL_ID} button[data-crgr="auto-fire"].active {
+          color: #ecfeff;
+          background: rgba(8, 47, 73, .5);
+          box-shadow: inset 0 0 18px rgba(56, 189, 248, .16), 0 0 18px rgba(56, 189, 248, .1);
         }
         #${PANEL_ID} button[data-crgr="leave"] { border-color: rgba(248, 113, 113, .55); color: #fecaca; }
         #${PANEL_ID} pre {
@@ -576,6 +591,7 @@
         start: root.querySelector('[data-crgr="start"]'),
         stop: root.querySelector('[data-crgr="stop"]'),
         combat: root.querySelector('[data-crgr="combat"]'),
+        autoFire: root.querySelector('[data-crgr="auto-fire"]'),
         leave: root.querySelector('[data-crgr="leave"]'),
         collapse: root.querySelector('[data-crgr="collapse"]'),
         mode: root.querySelector('[data-crgr="mode"]'),
@@ -634,6 +650,11 @@
         combatTargets: 0,
         combatSpacingState: "none",
         combatSpacingMeters: null,
+        autoFireMode: false,
+        autoFireLastAt: 0,
+        autoFireShots: 0,
+        autoFireTarget: "",
+        autoFireStatus: "OFF",
         lastCombatDodge: { dx: 0, dy: 0, score: 0 },
         lastCombatSwitchAt: 0,
         combatManualOverride: false,
@@ -1249,20 +1270,24 @@
         )[0];
       }
 
-      function huntVelocityCmps(candidate) {
-        const rawVx = numberFrom(candidate.raw, ["vx", "vel_x", "velocity_x", "velocityX", "speed_x", "speedX"], NaN);
-        const rawVy = numberFrom(candidate.raw, ["vy", "vel_y", "velocity_y", "velocityY", "speed_y", "speedY"], NaN);
+      function entityVelocityCmps(entity, userId) {
+        const rawVx = numberFrom(entity, ["vx", "vel_x", "velocity_x", "velocityX", "speed_x", "speedX"], NaN);
+        const rawVy = numberFrom(entity, ["vy", "vel_y", "velocity_y", "velocityY", "speed_y", "speedY"], NaN);
         if (Number.isFinite(rawVx) && Number.isFinite(rawVy) && Math.hypot(rawVx, rawVy) > 0.01) {
           const tickMs = Math.max(1, Number(state.serverTickMs) || 50);
           const rawSpeed = Math.hypot(rawVx, rawVy);
           const scale = rawSpeed <= 250 ? 1000 / tickMs : 1;
           return { vx: rawVx * scale, vy: rawVy * scale };
         }
-        const motion = runner.enemyMotion.get(String(candidate.userId));
+        const motion = runner.enemyMotion.get(String(userId ?? (entity && entity.user_id) ?? enemyKey(entity)));
         if (motion && (Math.abs(motion.vxCmps || 0) > 0.01 || Math.abs(motion.vyCmps || 0) > 0.01)) {
           return { vx: motion.vxCmps || 0, vy: motion.vyCmps || 0 };
         }
         return { vx: 0, vy: 0 };
+      }
+
+      function huntVelocityCmps(candidate) {
+        return entityVelocityCmps(candidate.raw, candidate.userId);
       }
 
       function predictedHuntPoint(candidate, me) {
@@ -1651,6 +1676,185 @@
           }
         }
         return best;
+      }
+
+      function autoFireTarget(me) {
+        return liveEnemies(me, AUTO_FIRE_RANGE_CM)
+          .map(enemy => ({
+            ...enemy,
+            hpForFire: numberFrom(enemy, ["hp", "health", "life_value", "current_hp"], NaN)
+          }))
+          .filter(enemy => Number.isFinite(enemy.hpForFire) && enemy.hpForFire > 0)
+          .sort((a, b) => a.hpForFire - b.hpForFire || a.dist - b.dist || Number(a.user_id) - Number(b.user_id))[0] || null;
+      }
+
+      function observedProjectileSpeedCmps() {
+        const speeds = [];
+        for (const projectile of runner.projectileMotion.values()) {
+          const speed = Math.hypot(Number(projectile.vx), Number(projectile.vy));
+          if (Number.isFinite(speed) && speed > 1000) speeds.push(speed);
+        }
+        if (!speeds.length) return NaN;
+        speeds.sort((a, b) => a - b);
+        return speeds[Math.floor(speeds.length / 2)];
+      }
+
+      function autoFireProjectileSpeedCmps() {
+        const direct = numberFrom(state, [
+          "bullet_speed_cmps",
+          "bulletSpeedCmps",
+          "projectile_speed_cmps",
+          "projectileSpeedCmps"
+        ], NaN);
+        if (Number.isFinite(direct) && direct > 1000) return direct;
+        const perTick = numberFrom(state, [
+          "bullet_speed_per_tick",
+          "bulletSpeedPerTick",
+          "projectile_speed_per_tick",
+          "projectileSpeedPerTick",
+          "speed_per_tick",
+          "speedPerTick"
+        ], NaN);
+        if (Number.isFinite(perTick) && perTick > 0) {
+          const tickMs = Math.max(1, Number(state.serverTickMs) || 50);
+          return perTick * 1000 / tickMs;
+        }
+        const observed = observedProjectileSpeedCmps();
+        return Number.isFinite(observed) ? observed : AUTO_FIRE_DEFAULT_PROJECTILE_SPEED_CMPS;
+      }
+
+      function interceptLeadSeconds(me, target, velocity, projectileSpeed) {
+        const rx = Number(target.x) - Number(me.x);
+        const ry = Number(target.y) - Number(me.y);
+        const vx = Number(velocity.vx) || 0;
+        const vy = Number(velocity.vy) || 0;
+        const speed = Math.max(1, Number(projectileSpeed) || AUTO_FIRE_DEFAULT_PROJECTILE_SPEED_CMPS);
+        const a = vx * vx + vy * vy - speed * speed;
+        const b = 2 * (rx * vx + ry * vy);
+        const c = rx * rx + ry * ry;
+        let lead = Math.sqrt(c) / speed;
+        if (Math.abs(a) > 0.001) {
+          const disc = b * b - 4 * a * c;
+          if (disc >= 0) {
+            const root = Math.sqrt(disc);
+            const t1 = (-b - root) / (2 * a);
+            const t2 = (-b + root) / (2 * a);
+            const positive = [t1, t2].filter(value => Number.isFinite(value) && value > 0).sort((x, y) => x - y)[0];
+            if (Number.isFinite(positive)) lead = positive;
+          }
+        } else if (Math.abs(b) > 0.001) {
+          const linear = -c / b;
+          if (Number.isFinite(linear) && linear > 0) lead = linear;
+        }
+        return Math.min(AUTO_FIRE_LEAD_MAX_MS / 1000, Math.max(AUTO_FIRE_LEAD_MIN_MS / 1000, lead));
+      }
+
+      function predictedAutoFirePoint(me, target) {
+        const velocity = entityVelocityCmps(target, target.user_id);
+        const projectileSpeed = autoFireProjectileSpeedCmps();
+        const leadSeconds = interceptLeadSeconds(me, target, velocity, projectileSpeed);
+        return {
+          x: Number(target.x) + velocity.vx * leadSeconds,
+          y: Number(target.y) + velocity.vy * leadSeconds,
+          leadMs: Math.round(leadSeconds * 1000),
+          projectileSpeed,
+          targetSpeed: Math.hypot(velocity.vx, velocity.vy)
+        };
+      }
+
+      function autoFireCooldownMs(me) {
+        const stamina = Number(me && me.stamina_5s_remaining_milli);
+        if (!Number.isFinite(stamina)) return AUTO_FIRE_MAX_RATE_MS * 2;
+        if (stamina < AUTO_FIRE_STAMINA_COST_MILLI) return Infinity;
+        const ratio = Math.max(0, Math.min(1, stamina / AUTO_FIRE_STAMINA_MAX_MILLI));
+        if (ratio >= 0.72) return AUTO_FIRE_MAX_RATE_MS;
+        if (ratio >= 0.5) return 150;
+        if (ratio >= 0.32) return 240;
+        if (ratio >= 0.2) return 380;
+        return 620;
+      }
+
+      function autoFireClientPoint(me, point) {
+        const toClient = worldToClientFactory(me, root.getBoundingClientRect());
+        const client = toClient(point);
+        const x = Number(client && client.x);
+        const y = Number(client && client.y);
+        if (!Number.isFinite(x) || !Number.isFinite(y)) return null;
+        const rect = canvasRect();
+        const margin = 4;
+        if (x < rect.left - margin || x > rect.right + margin || y < rect.top - margin || y > rect.bottom + margin) {
+          return null;
+        }
+        return { x, y };
+      }
+
+      function worldCanvasElement() {
+        return (typeof canvas !== "undefined" ? canvas : document.getElementById("world")) || document.body;
+      }
+
+      function dispatchAutoFireClick(client) {
+        const target = worldCanvasElement();
+        if (typeof setPointerFromClient === "function") {
+          try {
+            setPointerFromClient(client.x, client.y);
+          } catch (_) {}
+        }
+        const common = {
+          bubbles: true,
+          cancelable: true,
+          view: window,
+          clientX: client.x,
+          clientY: client.y,
+          screenX: Math.round(window.screenX + client.x),
+          screenY: Math.round(window.screenY + client.y)
+        };
+        target.dispatchEvent(new MouseEvent("mousemove", { ...common, button: 0, buttons: 0 }));
+        target.dispatchEvent(new MouseEvent("mousedown", { ...common, button: 0, buttons: 1 }));
+        target.dispatchEvent(new MouseEvent("mouseup", { ...common, button: 0, buttons: 0 }));
+        target.dispatchEvent(new MouseEvent("click", { ...common, button: 0, buttons: 0 }));
+      }
+
+      function handleAutoFire(me) {
+        if (!runner.autoFireMode) return false;
+        if (!me || me.life !== "Alive" || Number(me.hp || 0) <= COMBAT_LOW_HP) {
+          runner.autoFireStatus = "SAFE";
+          return false;
+        }
+        const target = autoFireTarget(me);
+        if (!target) {
+          runner.autoFireTarget = "";
+          runner.autoFireStatus = "无目标";
+          return false;
+        }
+        const cooldown = autoFireCooldownMs(me);
+        if (!Number.isFinite(cooldown)) {
+          runner.autoFireTarget = target.name || ("#" + target.user_id);
+          runner.autoFireStatus = "体力不足";
+          return false;
+        }
+        const now = Date.now();
+        const wait = Math.max(AUTO_FIRE_MAX_RATE_MS, cooldown);
+        if (now - runner.autoFireLastAt < wait) {
+          runner.autoFireTarget = target.name || ("#" + target.user_id);
+          runner.autoFireStatus = "冷却 " + Math.max(0, Math.ceil(wait - (now - runner.autoFireLastAt))) + "ms";
+          return false;
+        }
+        const aim = predictedAutoFirePoint(me, target);
+        const client = autoFireClientPoint(me, aim);
+        if (!client) {
+          runner.autoFireTarget = target.name || ("#" + target.user_id);
+          runner.autoFireStatus = "目标超出画面";
+          return false;
+        }
+        dispatchAutoFireClick(client);
+        runner.autoFireLastAt = now;
+        runner.autoFireShots += 1;
+        runner.autoFireTarget = target.name || ("#" + target.user_id);
+        runner.autoFireStatus = "射击 " + runner.autoFireTarget
+          + " HP " + Math.round(target.hpForFire)
+          + " / " + Math.round(target.dist / 100) + "m"
+          + " / 预判 " + aim.leadMs + "ms";
+        return true;
       }
 
       function minRichEnemyDistanceAt(x, y, enemies) {
@@ -2387,6 +2591,8 @@
         runner.running = false;
         runner.combatMode = false;
         runner.huntMode = false;
+        runner.autoFireMode = false;
+        runner.autoFireStatus = "OFF";
         clearHuntTarget();
         clearCoinRoute();
         runner.combatRisk = "clear";
@@ -2415,6 +2621,28 @@
         if (!runner.running || !runner.timer) return;
         clearInterval(runner.timer);
         runner.timer = window.setInterval(step, runner.tickMs);
+      }
+
+      function setAutoFireMode(active, reason) {
+        const next = !!active;
+        if (runner.autoFireMode === next) return;
+        runner.autoFireMode = next;
+        runner.autoFireLastAt = 0;
+        runner.autoFireStatus = next ? "待机" : "OFF";
+        runner.autoFireTarget = "";
+        if (next) {
+          push("自动射击已开启：优先锁定红圈内最低血敌人");
+          if (!runner.running) start();
+          else setStepInterval(AUTO_FIRE_LOOP_MS);
+        } else {
+          push("自动射击已关闭" + (reason ? "：" + reason : ""));
+          if (runner.running && !runner.combatMode) setStepInterval(STEP_TICK_MS);
+        }
+        renderStatus();
+      }
+
+      function toggleAutoFireMode() {
+        setAutoFireMode(!runner.autoFireMode, "manual");
       }
 
       function setCombatMode(active, reason) {
@@ -2496,7 +2724,7 @@
 
       function handleCombatMode(me, hp) {
         if (!runner.combatMode) return false;
-        setStepInterval(hp < COMBAT_FAST_CHECK_HP ? COMBAT_FAST_TICK_MS : STEP_TICK_MS);
+        setStepInterval(hp < COMBAT_FAST_CHECK_HP ? COMBAT_FAST_TICK_MS : (runner.autoFireMode ? AUTO_FIRE_LOOP_MS : STEP_TICK_MS));
         clearCoinRoute();
         runner.planNextAt = 0;
         runner.navTarget = null;
@@ -2520,6 +2748,8 @@
         } else {
           setDanger(false);
         }
+
+        handleAutoFire(me);
 
         if (runner.manualTarget) {
           runner.combatProjectiles = activeProjectiles(me, Date.now()).length;
@@ -2593,6 +2823,13 @@
           trackEnemyMotion(Date.now());
 
           if (handleCombatMode(me, hp)) return;
+
+          if (runner.autoFireMode) {
+            setStepInterval(AUTO_FIRE_LOOP_MS);
+            handleAutoFire(me);
+          } else {
+            setStepInterval(STEP_TICK_MS);
+          }
 
           if (driveHuntTarget(me)) return;
 
@@ -2693,6 +2930,9 @@
         runner.combatProjectiles = 0;
         runner.combatTargets = 0;
         runner.combatManualOverride = false;
+        runner.autoFireMode = false;
+        runner.autoFireStatus = "OFF";
+        runner.autoFireTarget = "";
         runner.projectileMotion.clear();
         if (runner.timer) {
           clearInterval(runner.timer);
@@ -2746,6 +2986,10 @@
           combatProjectiles: runner.combatProjectiles,
           combatTargets: runner.combatTargets,
           combatManualOverride: runner.combatManualOverride,
+          autoFireMode: runner.autoFireMode,
+          autoFireStatus: runner.autoFireStatus,
+          autoFireTarget: runner.autoFireTarget,
+          autoFireShots: runner.autoFireShots,
           hp: me && me.hp,
           life: me && me.life,
           balance: me && me.external_balance_snapshot,
@@ -2787,20 +3031,27 @@
           ? ((s.combatManualOverride ? "手动 / " : "") + "弹体 " + s.combatProjectiles + " / 标记 " + s.combatTargets + " / " + s.combatRisk)
           : s.threat
           ? (s.threat.name + " / " + s.threat.dist + "cm / Drop " + s.threat.drop)
+          : s.autoFireMode
+          ? ("射击 " + (s.autoFireTarget || "-") + " / " + s.autoFireStatus)
           : "clear";
         ui.stamina.textContent = "5s " + (s.stamina5s ?? "--") + " / 1h " + (s.stamina1h ?? "--");
         ui.safety.textContent = "LEAVE " + s.leaves + " / EVADE " + s.avoidances;
         ui.status.textContent = s.combatMode
-          ? ("COMBAT / " + (s.combatManualOverride ? "MANUAL / " : "") + "BULLETS " + s.combatProjectiles + " / TARGETS " + s.combatTargets)
+          ? ("COMBAT / " + (s.combatManualOverride ? "MANUAL / " : "") + "BULLETS " + s.combatProjectiles + " / TARGETS " + s.combatTargets
+            + (s.autoFireMode ? " / FIRE " + s.autoFireStatus : ""))
           : s.huntMode
-          ? ("HUNT / QUERY " + (s.huntQuery || "-") + " / TARGET " + (s.huntTargetName || "-"))
+          ? ("HUNT / QUERY " + (s.huntQuery || "-") + " / TARGET " + (s.huntTargetName || "-")
+            + (s.autoFireMode ? " / FIRE " + s.autoFireStatus : ""))
           : "BAL " + (s.balance ?? "--")
             + " / VALUE " + (s.value ?? "--")
             + " / NEAREST " + s.nearest
             + " / ROUTE " + (s.routeKind || "single") + ":" + (s.routeCount || 0)
-            + " / SCORE " + s.targetScore;
+            + " / SCORE " + s.targetScore
+            + (s.autoFireMode ? " / FIRE " + s.autoFireStatus : "");
         ui.combat.classList.toggle("active", !!s.combatMode);
         ui.combat.textContent = s.combatMode ? "交战 ON" : "临时交战";
+        ui.autoFire.classList.toggle("active", !!s.autoFireMode);
+        ui.autoFire.textContent = s.autoFireMode ? "射击 ON" : "自动射击";
         ui.hunt.classList.toggle("active", !!s.huntMode);
         ui.hunt.textContent = s.huntMode ? "追杀 ON" : "追杀";
       }
@@ -2811,6 +3062,7 @@
       runner.leave = reason => clickLeave(reason || "manual");
       runner.setCombatMode = setCombatMode;
       runner.setHuntMode = setHuntMode;
+      runner.setAutoFireMode = setAutoFireMode;
       runner.setManualTarget = setManualTarget;
       runner.clearManualTarget = clearManualTarget;
       runner.status = snapshot;
@@ -2822,6 +3074,7 @@
       ui.start.addEventListener("click", start);
       ui.stop.addEventListener("click", () => stop("manual"));
       ui.combat.addEventListener("click", toggleCombatMode);
+      ui.autoFire.addEventListener("click", toggleAutoFireMode);
       ui.hunt.addEventListener("click", toggleHuntMode);
       ui.huntQuery.addEventListener("keydown", event => {
         if (event.key === "Enter") {
