@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Grasp Rat Gold Runner
 // @namespace    https://grasp-rat-game.h-e.top/
-// @version      1.6.10
+// @version      1.6.11
 // @description  Auto collect coin drops with HP-drop teleport safety and stamina-fail leave fallback.
 // @match        https://grasp-rat-game.h-e.top/*
 // @run-at       document-end
@@ -50,6 +50,15 @@
     const ENEMY_MOVE_EPSILON_CM = 30;
     const LINE_CANVAS_MAX_DPR = 1.75;
     const DROP_CLUSTER_CM = 9000;
+    const ROUTE_CLUSTER_CM = 13000;
+    const ROUTE_LINK_CM = 15000;
+    const ROUTE_MAX_LINK_CM = 22000;
+    const ROUTE_ANCHOR_LIMIT = 22;
+    const ROUTE_POOL_LIMIT = 72;
+    const ROUTE_MAX_POINTS_DENSE = 6;
+    const ROUTE_MAX_POINTS_MID = 4;
+    const ROUTE_MAX_POINTS_SPARSE = 2;
+    const ROUTE_SWITCH_FACTOR = 1.14;
     const REPLAN_MS = 1800;
     const AXIS_DOMINANCE_RATIO = 1.65;
     const HUNT_REACHED_CM = 260;
@@ -518,6 +527,12 @@
         startedAt: 0,
         targetId: null,
         targetScore: 0,
+        routeIds: [],
+        routeScore: 0,
+        routeValue: 0,
+        routeTravelSeconds: 0,
+        routeKind: "",
+        routeAdvanced: false,
         navTarget: null,
         planNextAt: 0,
         manualTarget: null,
@@ -675,7 +690,7 @@
       function clearManualTarget(reason) {
         if (!runner.manualTarget) return;
         runner.manualTarget = null;
-        runner.targetScore = 0;
+        clearCoinRoute();
         runner.planNextAt = 0;
         push("手动坐标目标已清除" + (reason ? "：" + reason : ""));
       }
@@ -689,8 +704,7 @@
           y: Math.round(Number(y)),
           setAt: Date.now()
         };
-        runner.targetId = null;
-        runner.targetScore = 0;
+        clearCoinRoute();
         runner.planNextAt = 0;
         push("右键坐标目标 " + runner.manualTarget.x + "," + runner.manualTarget.y);
         if (!runner.running) start();
@@ -699,6 +713,35 @@
 
       function huntQueryText() {
         return String((ui.huntQuery && ui.huntQuery.value) || runner.huntQuery || "").trim();
+      }
+
+      function clearCoinRoute() {
+        runner.targetId = null;
+        runner.targetScore = 0;
+        runner.routeIds = [];
+        runner.routeScore = 0;
+        runner.routeValue = 0;
+        runner.routeTravelSeconds = 0;
+        runner.routeKind = "";
+        runner.routeAdvanced = false;
+        if (runner.navTarget && runner.navTarget.type === "coin") runner.navTarget = null;
+      }
+
+      function adoptCoinRoute(route) {
+        const ids = route && Array.isArray(route.ids) ? route.ids.filter(id => Number.isFinite(Number(id))) : [];
+        if (!route || !route.target || !ids.length) {
+          clearCoinRoute();
+          return;
+        }
+        runner.routeIds = ids.map(id => Number(id));
+        runner.targetId = Number(route.target.drop_id);
+        runner.targetScore = Number(route.score) || 0;
+        runner.routeScore = runner.targetScore;
+        runner.routeValue = Number(route.value) || 0;
+        runner.routeTravelSeconds = Number(route.travelSeconds) || 0;
+        runner.routeKind = route.kind || "";
+        runner.routeAdvanced = false;
+        runner.planNextAt = Date.now() + REPLAN_MS;
       }
 
       function clearHuntTarget() {
@@ -720,8 +763,7 @@
         runner.huntMode = next;
         runner.huntQuery = next ? query : "";
         clearHuntTarget();
-        runner.targetId = null;
-        runner.targetScore = 0;
+        clearCoinRoute();
         runner.planNextAt = 0;
         if (next) {
           if (runner.manualTarget) clearManualTarget("开启自动追杀");
@@ -763,8 +805,7 @@
         runner.lastAction = (label || "前往") + "右键坐标 "
           + runner.manualTarget.x + "," + runner.manualTarget.y
           + "，距离 " + Math.round(dist);
-        runner.targetId = null;
-        runner.targetScore = 0;
+        clearCoinRoute();
         return true;
       }
 
@@ -1319,19 +1360,30 @@
         return diagonal / 35 + axis / 50;
       }
 
-      function dropClusterValue(drop, candidates) {
-        return candidates.reduce((sum, other) => {
-          if (Number(other.drop_id) === Number(drop.drop_id)) return sum;
+      function dropAmount(drop) {
+        return Math.max(1, Number(drop && drop.amount || 1));
+      }
+
+      function travelSeconds(fromX, fromY, toX, toY) {
+        return Math.max(0.2, travelTicks(fromX, fromY, toX, toY) * 0.05);
+      }
+
+      function dropClusterValue(drop, candidates, radius, weight) {
+        const scanRadius = radius || DROP_CLUSTER_CM;
+        const valueWeight = weight == null ? 0.65 : weight;
+        let sum = 0;
+        for (const other of candidates || []) {
+          if (Number(other.drop_id) === Number(drop.drop_id)) continue;
           const dist = Math.hypot(Number(other.x) - Number(drop.x), Number(other.y) - Number(drop.y));
-          if (dist > DROP_CLUSTER_CM) return sum;
-          return sum + Number(other.amount || 1) * (1 - dist / DROP_CLUSTER_CM) * 0.65;
-        }, 0);
+          if (dist > scanRadius) continue;
+          sum += dropAmount(other) * (1 - dist / scanRadius) * valueWeight;
+        }
+        return sum;
       }
 
       function scoreDrop(drop, me, threats, candidates) {
-        const amount = Math.max(1, Number(drop.amount || 1));
-        const ticks = travelTicks(Number(me.x), Number(me.y), Number(drop.x), Number(drop.y));
-        const seconds = Math.max(0.2, ticks * 0.05);
+        const amount = dropAmount(drop);
+        const seconds = travelSeconds(Number(me.x), Number(me.y), Number(drop.x), Number(drop.y));
         const cluster = dropClusterValue(drop, candidates);
         const targetSafety = minRichEnemyDistanceAt(Number(drop.x), Number(drop.y), threats);
         const midSafety = minRichEnemyDistanceAt(
@@ -1348,28 +1400,256 @@
         return ((amount + cluster) / (seconds + 1.6)) * safetyFactor * sameTargetBias;
       }
 
-      function bestDrop(me, enemies) {
+      function routeClusterStats(drop, candidates) {
+        let count = 0;
+        let amount = 0;
+        let weighted = 0;
+        for (const other of candidates) {
+          if (Number(other.drop_id) === Number(drop.drop_id)) continue;
+          const dist = Math.hypot(Number(other.x) - Number(drop.x), Number(other.y) - Number(drop.y));
+          if (dist > ROUTE_CLUSTER_CM) continue;
+          const value = dropAmount(other);
+          count += 1;
+          amount += value;
+          weighted += value * (1 - dist / ROUTE_CLUSTER_CM);
+        }
+        return { count, amount, weighted };
+      }
+
+      function coinCandidates(me, enemies) {
         const threats = enemies || richEnemies(me, RICH_ENEMY_SCAN_CM);
-        const candidates = state.coinDrops
+        const drops = Array.isArray(state.coinDrops) ? state.coinDrops : [];
+        const candidates = drops
           .map(drop => ({
             ...drop,
+            amountValue: dropAmount(drop),
             dist: Math.hypot(Number(drop.x) - Number(me.x), Number(drop.y) - Number(me.y)),
             richEnemyDist: minRichEnemyDistanceAt(Number(drop.x), Number(drop.y), threats)
           }))
-          .filter(drop => Number.isFinite(drop.dist));
-        const safe = (threats.length
+          .filter(drop => Number.isFinite(drop.dist) && Number.isFinite(Number(drop.x)) && Number.isFinite(Number(drop.y)));
+        const safeBase = (threats.length
           ? candidates.filter(drop => drop.richEnemyDist >= RICH_ENEMY_KEEP_CM)
-          : candidates)
+          : candidates);
+        const safe = safeBase
           .map(drop => ({
             ...drop,
-            score: scoreDrop(drop, me, threats, candidates)
+            score: scoreDrop(drop, me, threats, safeBase),
+            routeCluster: routeClusterStats(drop, safeBase)
           }))
           .filter(drop => Number.isFinite(drop.score));
-        return safe.sort((a, b) => b.score - a.score || a.dist - b.dist)[0] || null;
+        return safe;
+      }
+
+      function routeLimitForAnchor(anchor) {
+        const count = anchor && anchor.routeCluster ? anchor.routeCluster.count : 0;
+        if (count >= 7) return ROUTE_MAX_POINTS_DENSE;
+        if (count >= 3) return ROUTE_MAX_POINTS_MID;
+        if (count >= 1) return ROUTE_MAX_POINTS_SPARSE;
+        return 1;
+      }
+
+      function routeLegSafetyFactor(fromX, fromY, toX, toY, threats) {
+        const targetSafety = minRichEnemyDistanceAt(toX, toY, threats);
+        const midSafety = minRichEnemyDistanceAt((fromX + toX) / 2, (fromY + toY) / 2, threats);
+        const safety = Math.min(targetSafety, midSafety);
+        if (safety < RICH_ENEMY_KEEP_CM) return 0;
+        if (safety >= RICH_ENEMY_SCAN_CM) return 1;
+        return 0.55 + 0.45 * ((safety - RICH_ENEMY_KEEP_CM) / (RICH_ENEMY_SCAN_CM - RICH_ENEMY_KEEP_CM));
+      }
+
+      function routeTurnFactor(prevDx, prevDy, nextDx, nextDy) {
+        const prevLen = Math.hypot(prevDx, prevDy);
+        const nextLen = Math.hypot(nextDx, nextDy);
+        if (prevLen < 1 || nextLen < 1) return 1;
+        const cos = (prevDx * nextDx + prevDy * nextDy) / (prevLen * nextLen);
+        if (cos < -0.45) return 0.58;
+        if (cos < -0.12) return 0.76;
+        if (cos > 0.72) return 1.08;
+        return 1;
+      }
+
+      function routeStepScore(drop, currentX, currentY, prevDx, prevDy, remaining, threats, linkLimit) {
+        const dx = Number(drop.x) - currentX;
+        const dy = Number(drop.y) - currentY;
+        const legDist = Math.hypot(dx, dy);
+        const allowLongValue = drop.amountValue >= 10 && legDist <= ROUTE_MAX_LINK_CM;
+        if (legDist > linkLimit && !allowLongValue) return null;
+        const safetyFactor = routeLegSafetyFactor(currentX, currentY, Number(drop.x), Number(drop.y), threats);
+        if (safetyFactor <= 0) return null;
+        const seconds = travelSeconds(currentX, currentY, Number(drop.x), Number(drop.y));
+        const localCluster = Math.min(drop.amountValue * 2.4, dropClusterValue(drop, remaining, ROUTE_CLUSTER_CM, 0.38));
+        const turnFactor = routeTurnFactor(prevDx, prevDy, dx, dy);
+        const score = ((drop.amountValue + localCluster) / (seconds + 0.75)) * safetyFactor * turnFactor;
+        return { drop, dx, dy, legDist, seconds, safetyFactor, score };
+      }
+
+      function chooseNextRouteDrop(currentX, currentY, prevDx, prevDy, remaining, threats, linkLimit) {
+        let best = null;
+        for (const drop of remaining.values()) {
+          const scored = routeStepScore(drop, currentX, currentY, prevDx, prevDy, remaining.values(), threats, linkLimit);
+          if (!scored) continue;
+          if (!best || scored.score > best.score || (scored.score === best.score && scored.legDist < best.legDist)) {
+            best = scored;
+          }
+        }
+        return best;
+      }
+
+      function buildRouteFromAnchor(anchor, candidates, me, threats) {
+        const maxPoints = routeLimitForAnchor(anchor);
+        const linkLimit = anchor.routeCluster.count >= 5 ? ROUTE_MAX_LINK_CM : ROUTE_LINK_CM;
+        const remaining = new Map(candidates.map(drop => [Number(drop.drop_id), drop]));
+        const route = [];
+        let currentX = Number(me.x);
+        let currentY = Number(me.y);
+        let prevDx = 0;
+        let prevDy = 0;
+        let totalValue = 0;
+        let totalSeconds = 0;
+        let minSafetyFactor = 1;
+
+        for (let step = 0; step < maxPoints; step += 1) {
+          const next = step === 0
+            ? routeStepScore(anchor, currentX, currentY, prevDx, prevDy, remaining.values(), threats, Infinity)
+            : chooseNextRouteDrop(currentX, currentY, prevDx, prevDy, remaining, threats, linkLimit);
+          if (!next) break;
+          if (step > 0) {
+            const currentEfficiency = totalValue / Math.max(0.8, totalSeconds);
+            const densityAllowance = anchor.routeCluster.count >= 5 ? 0.30 : 0.43;
+            if (next.score < currentEfficiency * densityAllowance) break;
+          }
+          route.push(next.drop);
+          remaining.delete(Number(next.drop.drop_id));
+          totalValue += next.drop.amountValue;
+          totalSeconds += next.seconds;
+          minSafetyFactor = Math.min(minSafetyFactor, next.safetyFactor);
+          currentX = Number(next.drop.x);
+          currentY = Number(next.drop.y);
+          prevDx = next.dx;
+          prevDy = next.dy;
+        }
+
+        if (!route.length) return null;
+        const ids = route.map(drop => Number(drop.drop_id));
+        const densityBonus = Math.min(
+          totalValue * 0.75,
+          route.reduce((sum, drop) => sum + Math.min(drop.amountValue * 2, drop.routeCluster.weighted) * 0.18, 0)
+        );
+        const countBonus = 1 + Math.min(0.18, (route.length - 1) * 0.045);
+        const sameRouteBias = ids[0] === Number(runner.targetId) ? 1.08 : 1;
+        const kind = route.length >= 3 ? "cluster" : route.length === 2 ? "pair" : "single";
+        const score = ((totalValue + densityBonus) / (totalSeconds + 1.4)) * minSafetyFactor * countBonus * sameRouteBias;
+        return {
+          ids,
+          target: route[0],
+          drops: route,
+          score,
+          value: totalValue,
+          travelSeconds: totalSeconds,
+          kind
+        };
+      }
+
+      function uniqueDrops(groups, limit) {
+        const anchors = new Map();
+        for (const group of groups) {
+          for (const drop of group) {
+            const id = Number(drop.drop_id);
+            if (!anchors.has(id)) anchors.set(id, drop);
+            if (anchors.size >= limit) return Array.from(anchors.values());
+          }
+        }
+        return Array.from(anchors.values());
+      }
+
+      function uniqueAnchors(groups) {
+        return uniqueDrops(groups, ROUTE_ANCHOR_LIMIT);
+      }
+
+      function bestDropRoute(me, enemies) {
+        const threats = enemies || richEnemies(me, RICH_ENEMY_SCAN_CM);
+        const candidates = coinCandidates(me, threats);
+        if (!candidates.length) return null;
+        const bySingleAll = [...candidates].sort((a, b) => b.score - a.score || a.dist - b.dist);
+        const bySingle = bySingleAll.slice(0, 12);
+        const byCluster = [...candidates]
+          .sort((a, b) =>
+            ((b.amountValue + b.routeCluster.weighted) / (travelSeconds(Number(me.x), Number(me.y), Number(b.x), Number(b.y)) + 1.4))
+            - ((a.amountValue + a.routeCluster.weighted) / (travelSeconds(Number(me.x), Number(me.y), Number(a.x), Number(a.y)) + 1.4))
+            || a.dist - b.dist
+          )
+        const byNearAll = [...candidates].sort((a, b) => a.dist - b.dist);
+        const byAmountAll = [...candidates].sort((a, b) => b.amountValue - a.amountValue || a.dist - b.dist);
+        const byNear = byNearAll.slice(0, 6);
+        const byAmount = byAmountAll.slice(0, 6);
+        const current = runner.targetId
+          ? candidates.filter(drop => Number(drop.drop_id) === Number(runner.targetId))
+          : [];
+        const routePool = uniqueDrops([
+          current,
+          bySingleAll.slice(0, 36),
+          byCluster.slice(0, 36),
+          byNearAll.slice(0, 18),
+          byAmountAll.slice(0, 18)
+        ], ROUTE_POOL_LIMIT);
+        const anchors = uniqueAnchors([current, bySingle, byCluster, byNear, byAmount]);
+        let best = null;
+        for (const anchor of anchors) {
+          const route = buildRouteFromAnchor(anchor, routePool, me, threats);
+          if (!route) continue;
+          if (!best || route.score > best.score || (route.score === best.score && route.travelSeconds < best.travelSeconds)) {
+            best = route;
+          }
+        }
+        return best;
+      }
+
+      function currentCoinRouteTarget(me, threats) {
+        const drops = Array.isArray(state.coinDrops) ? state.coinDrops : [];
+        while (runner.routeIds && runner.routeIds.length) {
+          const id = Number(runner.routeIds[0]);
+          const target = drops.find(drop => Number(drop.drop_id) === id);
+          if (!target) {
+            runner.routeIds.shift();
+            runner.routeAdvanced = true;
+            runner.planNextAt = 0;
+            runner.targetScore *= 0.68;
+            continue;
+          }
+          if (minRichEnemyDistanceAt(Number(target.x), Number(target.y), threats) < RICH_ENEMY_KEEP_CM) {
+            clearCoinRoute();
+            return null;
+          }
+          runner.targetId = id;
+          return {
+            ...target,
+            amountValue: dropAmount(target),
+            dist: Math.hypot(Number(target.x) - Number(me.x), Number(target.y) - Number(me.y)),
+            score: runner.targetScore
+          };
+        }
+
+        if (runner.targetId) {
+          const target = drops.find(drop => Number(drop.drop_id) === Number(runner.targetId));
+          if (!target || minRichEnemyDistanceAt(Number(target.x), Number(target.y), threats) < RICH_ENEMY_KEEP_CM) {
+            clearCoinRoute();
+            return null;
+          }
+          return {
+            ...target,
+            amountValue: dropAmount(target),
+            dist: Math.hypot(Number(target.x) - Number(me.x), Number(target.y) - Number(me.y)),
+            score: runner.targetScore
+          };
+        }
+
+        clearCoinRoute();
+        return null;
       }
 
       function nearestDrop(me, enemies) {
-        return bestDrop(me, enemies);
+        const route = bestDropRoute(me, enemies);
+        return route ? route.target : null;
       }
 
       function fleeFrom(enemy, me, reason, urgent) {
@@ -1383,8 +1663,7 @@
           "evade"
         );
         setDanger(urgent);
-        runner.targetId = null;
-        runner.targetScore = 0;
+        clearCoinRoute();
         runner.avoidances += 1;
         runner.lastThreat = {
           name: enemy.name || ("User " + enemy.user_id),
@@ -1447,8 +1726,7 @@
         } else {
           clearHuntTarget();
           stopMove();
-          runner.targetId = null;
-          runner.targetScore = 0;
+          clearCoinRoute();
           runner.lastAction = "追杀：未找到匹配用户名 " + query;
           return true;
         }
@@ -1456,8 +1734,7 @@
         const rx = Number(point.x) - Number(me.x);
         const ry = Number(point.y) - Number(me.y);
         const dist = Math.hypot(rx, ry);
-        runner.targetId = null;
-        runner.targetScore = 0;
+        clearCoinRoute();
         setDanger(false);
         setNavigationTarget(point.x, point.y, "hunt");
 
@@ -1841,6 +2118,7 @@
         runner.combatMode = false;
         runner.huntMode = false;
         clearHuntTarget();
+        clearCoinRoute();
         runner.combatRisk = "clear";
         runner.staminaFailSeen = true;
         if (runner.timer) {
@@ -1868,7 +2146,7 @@
         if (!force && Date.now() - runner.lastTeleportAt < 2500) return;
         stopMove();
         setDanger(false);
-        runner.targetId = null;
+        clearCoinRoute();
         runner.teleports += 1;
         runner.lastTeleportAt = Date.now();
         runner.teleportCheckUntil = Date.now() + 3000;
@@ -1896,8 +2174,7 @@
           clearManualTarget("手动开启临时交战");
         }
         runner.combatMode = next;
-        runner.targetId = null;
-        runner.targetScore = 0;
+        clearCoinRoute();
         runner.planNextAt = 0;
         runner.navTarget = null;
         runner.lastCombatDodge = { dx: 0, dy: 0, score: 0 };
@@ -1959,8 +2236,7 @@
 
       function handleCombatMode(me, hp) {
         if (!runner.combatMode) return false;
-        runner.targetId = null;
-        runner.targetScore = 0;
+        clearCoinRoute();
         runner.planNextAt = 0;
         runner.navTarget = null;
 
@@ -2102,30 +2378,25 @@
 
           if (driveManualTarget(me, "前往")) return;
 
-          let target = runner.targetId
-            ? state.coinDrops.find(drop => Number(drop.drop_id) === Number(runner.targetId))
-            : null;
-          if (target && minRichEnemyDistanceAt(Number(target.x), Number(target.y), threats) < RICH_ENEMY_KEEP_CM) {
-            runner.targetId = null;
-            runner.targetScore = 0;
-            target = null;
-          }
+          let target = currentCoinRouteTarget(me, threats);
 
           const shouldReplan = !target || Date.now() >= runner.planNextAt;
           if (shouldReplan) {
-            const planned = bestDrop(me, threats);
-            if (planned && (!target || planned.score > runner.targetScore * 1.22)) {
-              target = planned;
-              runner.targetId = Number(target.drop_id);
-              runner.targetScore = target.score;
-              runner.planNextAt = Date.now() + REPLAN_MS;
-              push("规划金币 " + runner.targetId
-                + " 距离 " + Math.round(target.dist)
-                + " 金额 " + Math.max(1, Number(target.amount || 1))
-                + " 评分 " + target.score.toFixed(3));
+            const planned = bestDropRoute(me, threats);
+            const switchFactor = runner.routeAdvanced ? 0.98 : ROUTE_SWITCH_FACTOR;
+            if (planned && (!target || planned.score > runner.targetScore * switchFactor)) {
+              adoptCoinRoute(planned);
+              target = currentCoinRouteTarget(me, threats);
+              push("规划金币路线 " + runner.routeIds.join(">")
+                + " / " + (runner.routeKind || "single")
+                + " / " + planned.drops.length + "点"
+                + " / 总额 " + Math.round(planned.value)
+                + " / 路程 " + planned.travelSeconds.toFixed(1) + "s"
+                + " / 评分 " + planned.score.toFixed(3));
             } else {
               runner.planNextAt = Date.now() + REPLAN_MS;
             }
+            runner.routeAdvanced = false;
           }
 
           if (!target) {
@@ -2142,15 +2413,15 @@
 
           if (dist < 45) {
             stopMove();
-            runner.targetId = null;
-            runner.lastAction = "贴近金币，等待入账";
+            runner.lastAction = "贴近金币 " + runner.targetId + "，等待入账";
             return;
           }
 
           const move = moveToward(rx, ry);
           setNavigationTarget(target.x, target.y, "coin");
           runner.lastAction = "前往金币 " + runner.targetId
-            + "，距离 " + Math.round(dist);
+            + "，距离 " + Math.round(dist)
+            + "，路线 " + Math.max(1, runner.routeIds.length) + "点";
         } catch (err) {
           runner.lastError = String(err && err.message || err);
           stopMove();
@@ -2171,7 +2442,7 @@
         runner.teleportCheckUntil = 0;
         runner.teleportCheckContext = TELEPORT_CONTEXT_GENERAL;
         runner.teleportChatBaseline = "";
-        runner.targetScore = 0;
+        clearCoinRoute();
         runner.planNextAt = 0;
         runner.pausedUntil = 0;
         runner.timer = window.setInterval(step, runner.tickMs);
@@ -2251,6 +2522,10 @@
           target: huntLabel || (manual ? (manual.x + "," + manual.y) : runner.targetId),
           nearest: drop ? Math.round(drop.dist) : "-",
           targetScore: runner.targetScore ? runner.targetScore.toFixed(3) : "-",
+          routeCount: runner.routeIds ? runner.routeIds.length : 0,
+          routeKind: runner.routeKind || "",
+          routeValue: runner.routeValue || 0,
+          routeTravelSeconds: runner.routeTravelSeconds || 0,
           moveMode: runner.lastMoveMode,
           manualTarget: manual ? { x: manual.x, y: manual.y } : null,
           threat: threat ? {
@@ -2288,6 +2563,7 @@
           : "BAL " + (s.balance ?? "--")
             + " / VALUE " + (s.value ?? "--")
             + " / NEAREST " + s.nearest
+            + " / ROUTE " + (s.routeKind || "single") + ":" + (s.routeCount || 0)
             + " / SCORE " + s.targetScore;
         ui.combat.classList.toggle("active", !!s.combatMode);
         ui.combat.textContent = s.combatMode ? "交战 ON" : "临时交战";
