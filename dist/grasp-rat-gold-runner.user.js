@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Grasp Rat Gold Runner
 // @namespace    https://grasp-rat-game.h-e.top/
-// @version      1.6.17
+// @version      1.6.18
 // @description  Auto collect coin drops with HP-drop leave safety and combat dodge support.
 // @match        https://grasp-rat-game.h-e.top/*
 // @run-at       document-end
@@ -59,6 +59,9 @@
     const AUTO_FIRE_STAMINA_MAX_MILLI = 10000;
     const AUTO_FIRE_LEAD_MIN_MS = 60;
     const AUTO_FIRE_LEAD_MAX_MS = 1150;
+    const AUTO_FIRE_BURST_MIN_SHOTS = 5;
+    const AUTO_FIRE_BURST_MAX_SHOTS = 8;
+    const AUTO_FIRE_BURST_SHOT_MS = AUTO_FIRE_MAX_RATE_MS;
     const PROJECTILE_MEMORY_MS = 1800;
     const MOVING_ENEMY_MEMORY_MS = 10000;
     const ENEMY_MOVE_EPSILON_CM = 30;
@@ -145,6 +148,7 @@
         '    <button type="button" data-crgr="collapse" title="折叠/展开">HUD</button>',
         '  </div>',
         '  <div class="crgr-attack-lock">',
+        '    <button type="button" class="crgr-auto-attack" data-crgr="auto-fire">自动攻击</button>',
         '    <div class="crgr-attack-head"><span>ATTACK BUFFER</span><small data-crgr="attack-lock-summary">AUTO</small></div>',
         '    <div class="crgr-attack-list" data-crgr="attack-list"><button type="button" disabled>扫描中</button></div>',
         '  </div>',
@@ -174,7 +178,6 @@
         '      <button type="button" data-crgr="start">启动</button>',
         '      <button type="button" data-crgr="stop">停止</button>',
         '      <button type="button" data-crgr="combat">临时交战</button>',
-        '      <button type="button" data-crgr="auto-fire">自动射击</button>',
         '      <button type="button" data-crgr="leave">离开</button>',
         '    </div>',
         '    <pre data-crgr="status">READY</pre>',
@@ -361,6 +364,19 @@
           border: 1px solid rgba(125, 211, 252, .14);
           pointer-events: auto;
         }
+        #${PANEL_ID} .crgr-auto-attack {
+          min-height: 36px;
+          color: #bae6fd;
+          background: rgba(8, 47, 73, .34);
+          border-color: rgba(56, 189, 248, .42);
+          font-weight: 700;
+          letter-spacing: .08em;
+        }
+        #${PANEL_ID} .crgr-auto-attack.active {
+          color: #ecfeff;
+          background: rgba(8, 47, 73, .62);
+          box-shadow: inset 0 0 18px rgba(56, 189, 248, .16), 0 0 18px rgba(56, 189, 248, .1);
+        }
         #${PANEL_ID} .crgr-attack-head {
           display: flex;
           align-items: center;
@@ -525,7 +541,7 @@
         }
         #${PANEL_ID} .crgr-actions {
           display: grid;
-          grid-template-columns: repeat(5, 1fr);
+          grid-template-columns: repeat(4, 1fr);
           gap: 6px;
         }
         #${PANEL_ID} button {
@@ -545,7 +561,6 @@
         #${PANEL_ID} button[data-crgr="start"] { border-color: rgba(74, 222, 128, .45); color: #bbf7d0; }
         #${PANEL_ID} button[data-crgr="stop"] { border-color: rgba(251, 191, 36, .45); color: #fde68a; }
         #${PANEL_ID} button[data-crgr="combat"] { border-color: rgba(248, 113, 113, .42); color: #fecaca; }
-        #${PANEL_ID} button[data-crgr="auto-fire"] { border-color: rgba(56, 189, 248, .42); color: #bae6fd; }
         #${PANEL_ID} button[data-crgr="hunt"] { border-color: rgba(250, 204, 21, .42); color: #fef3c7; }
         #${PANEL_ID} button[data-crgr="combat"].active {
           color: #fff7ed;
@@ -556,11 +571,6 @@
           color: #fffbeb;
           background: rgba(113, 63, 18, .44);
           box-shadow: inset 0 0 18px rgba(250, 204, 21, .14), 0 0 18px rgba(250, 204, 21, .08);
-        }
-        #${PANEL_ID} button[data-crgr="auto-fire"].active {
-          color: #ecfeff;
-          background: rgba(8, 47, 73, .5);
-          box-shadow: inset 0 0 18px rgba(56, 189, 248, .16), 0 0 18px rgba(56, 189, 248, .1);
         }
         #${PANEL_ID} button[data-crgr="leave"] { border-color: rgba(248, 113, 113, .55); color: #fecaca; }
         #${PANEL_ID} pre {
@@ -731,6 +741,10 @@
         combatSpacingMeters: null,
         autoFireMode: false,
         autoFireLastAt: 0,
+        autoFireNextBurstAt: 0,
+        autoFireBursting: false,
+        autoFireBurstTimers: [],
+        autoFireBurstClient: null,
         autoFireShots: 0,
         autoFireTarget: "",
         autoFireStatus: "OFF",
@@ -1957,29 +1971,39 @@
         return Math.min(AUTO_FIRE_LEAD_MAX_MS / 1000, Math.max(AUTO_FIRE_LEAD_MIN_MS / 1000, lead));
       }
 
-      function predictedAutoFirePoint(me, target) {
+      function randomBetween(min, max) {
+        return min + Math.random() * (max - min);
+      }
+
+      function randomInt(min, max) {
+        return Math.floor(randomBetween(min, max + 1));
+      }
+
+      function predictedAutoFirePoint(me, target, extraLeadSeconds, offset) {
         const velocity = entityVelocityCmps(target, target.user_id);
         const projectileSpeed = autoFireProjectileSpeedCmps();
         const leadSeconds = interceptLeadSeconds(me, target, velocity, projectileSpeed);
+        const totalLeadSeconds = leadSeconds + Math.max(0, Number(extraLeadSeconds) || 0);
+        const ox = Number(offset && offset.x) || 0;
+        const oy = Number(offset && offset.y) || 0;
         return {
-          x: Number(target.x) + velocity.vx * leadSeconds,
-          y: Number(target.y) + velocity.vy * leadSeconds,
-          leadMs: Math.round(leadSeconds * 1000),
+          x: Number(target.x) + velocity.vx * totalLeadSeconds + ox,
+          y: Number(target.y) + velocity.vy * totalLeadSeconds + oy,
+          leadMs: Math.round(totalLeadSeconds * 1000),
           projectileSpeed,
           targetSpeed: Math.hypot(velocity.vx, velocity.vy)
         };
       }
 
-      function autoFireCooldownMs(me) {
+      function autoFireBurstCooldownMs(me, target, shots) {
         const stamina = Number(me && me.stamina_5s_remaining_milli);
-        if (!Number.isFinite(stamina)) return AUTO_FIRE_MAX_RATE_MS * 2;
-        if (stamina < AUTO_FIRE_STAMINA_COST_MILLI) return Infinity;
-        const ratio = Math.max(0, Math.min(1, stamina / AUTO_FIRE_STAMINA_MAX_MILLI));
-        if (ratio >= 0.72) return AUTO_FIRE_MAX_RATE_MS;
-        if (ratio >= 0.5) return 150;
-        if (ratio >= 0.32) return 240;
-        if (ratio >= 0.2) return 380;
-        return 620;
+        const ratio = Number.isFinite(stamina) ? Math.max(0, Math.min(1, stamina / AUTO_FIRE_STAMINA_MAX_MILLI)) : 0.5;
+        const farBias = target && Number(target.dist) > 11000 ? -80 : 0;
+        const shotBias = Math.max(0, Number(shots) - AUTO_FIRE_BURST_MIN_SHOTS) * 24;
+        if (ratio >= 0.65) return Math.max(90, randomBetween(120, 260) + farBias + shotBias);
+        if (ratio >= 0.35) return Math.max(120, randomBetween(240, 520) + farBias + shotBias);
+        if (ratio >= 0.16) return Math.max(180, randomBetween(430, 760) + farBias + shotBias);
+        return randomBetween(620, 980) + shotBias;
       }
 
       function autoFireClientPoint(me, point) {
@@ -2000,7 +2024,39 @@
         return (typeof canvas !== "undefined" ? canvas : document.getElementById("world")) || document.body;
       }
 
-      function dispatchAutoFireClick(client) {
+      function autoFireCoverageOffsets(me, target, count) {
+        const velocity = entityVelocityCmps(target, target.user_id);
+        const targetSpeed = Math.hypot(velocity.vx, velocity.vy);
+        const rx = Number(target.x) - Number(me.x);
+        const ry = Number(target.y) - Number(me.y);
+        const dist = Math.max(1, Math.hypot(rx, ry));
+        const moveBasis = targetSpeed > 80
+          ? { x: velocity.vx / targetSpeed, y: velocity.vy / targetSpeed }
+          : { x: rx / dist, y: ry / dist };
+        const perp = { x: -moveBasis.y, y: moveBasis.x };
+        const along = moveBasis;
+        const spread = Math.min(980, Math.max(220, dist * 0.038 + targetSpeed * 0.075));
+        const pattern = [0, -0.85, 0.85, -0.42, 0.42, -1.22, 1.22, 0.18];
+        const mid = (count - 1) / 2;
+        const offsets = [];
+        for (let i = 0; i < count; i += 1) {
+          const lateral = (pattern[i] ?? randomBetween(-1.15, 1.15)) * spread;
+          const forward = (i - mid) * spread * 0.18 + randomBetween(-0.12, 0.12) * spread;
+          offsets.push({
+            x: perp.x * lateral + along.x * forward,
+            y: perp.y * lateral + along.y * forward
+          });
+        }
+        return offsets;
+      }
+
+      function autoFireBurstClient(me, target, offset, shotIndex) {
+        const freshTarget = visibleAttackTargetById(me, target.user_id) || target;
+        const extraLeadSeconds = Math.max(0, Number(shotIndex) || 0) * AUTO_FIRE_BURST_SHOT_MS / 1000;
+        return autoFireClientPoint(me, predictedAutoFirePoint(me, freshTarget, extraLeadSeconds, offset));
+      }
+
+      function dispatchAutoFireMouse(client, type, buttons) {
         const target = worldCanvasElement();
         if (typeof setPointerFromClient === "function") {
           try {
@@ -2016,14 +2072,86 @@
           screenX: Math.round(window.screenX + client.x),
           screenY: Math.round(window.screenY + client.y)
         };
-        target.dispatchEvent(new MouseEvent("mousemove", { ...common, button: 0, buttons: 0 }));
-        target.dispatchEvent(new MouseEvent("mousedown", { ...common, button: 0, buttons: 1 }));
-        target.dispatchEvent(new MouseEvent("mouseup", { ...common, button: 0, buttons: 0 }));
-        target.dispatchEvent(new MouseEvent("click", { ...common, button: 0, buttons: 0 }));
+        target.dispatchEvent(new MouseEvent(type, { ...common, button: 0, buttons }));
+      }
+
+      function clearAutoFireBurst(release) {
+        for (const timer of runner.autoFireBurstTimers || []) {
+          clearTimeout(timer);
+        }
+        runner.autoFireBurstTimers = [];
+        if (release && runner.autoFireBurstClient) {
+          dispatchAutoFireMouse(runner.autoFireBurstClient, "mouseup", 0);
+          dispatchAutoFireMouse(runner.autoFireBurstClient, "click", 0);
+        }
+        runner.autoFireBursting = false;
+        runner.autoFireBurstClient = null;
+      }
+
+      function scheduleAutoFireBurst(fn, delayMs) {
+        const timer = window.setTimeout(() => {
+          runner.autoFireBurstTimers = runner.autoFireBurstTimers.filter(item => item !== timer);
+          fn();
+        }, Math.max(0, delayMs));
+        runner.autoFireBurstTimers.push(timer);
+      }
+
+      function startAutoFireBurst(me, target, targetName) {
+        const stamina = Number(me && me.stamina_5s_remaining_milli);
+        if (Number.isFinite(stamina) && stamina < AUTO_FIRE_STAMINA_COST_MILLI) {
+          runner.autoFireStatus = "体力不足";
+          return false;
+        }
+        const shots = randomInt(AUTO_FIRE_BURST_MIN_SHOTS, AUTO_FIRE_BURST_MAX_SHOTS);
+        const offsets = autoFireCoverageOffsets(me, target, shots);
+        const firstClient = autoFireBurstClient(me, target, offsets[0], 0);
+        if (!firstClient) {
+          runner.autoFireStatus = "目标超出画面";
+          return false;
+        }
+
+        clearAutoFireBurst(false);
+        runner.autoFireBursting = true;
+        runner.autoFireBurstClient = firstClient;
+        runner.autoFireLastAt = Date.now();
+        runner.autoFireShots += shots;
+        runner.autoFireTarget = targetName;
+        runner.autoFireStatus = "连发 " + shots + " 发 " + targetName
+          + " / " + Math.round(target.dist / 100) + "m";
+
+        dispatchAutoFireMouse(firstClient, "mousemove", 0);
+        dispatchAutoFireMouse(firstClient, "mousedown", 1);
+
+        for (let i = 1; i < shots; i += 1) {
+          scheduleAutoFireBurst(() => {
+            const currentMe = getMe();
+            if (!currentMe || !runner.autoFireBursting) return;
+            const client = autoFireBurstClient(currentMe, target, offsets[i], i);
+            if (!client) return;
+            runner.autoFireBurstClient = client;
+            dispatchAutoFireMouse(client, "mousemove", 1);
+          }, i * AUTO_FIRE_BURST_SHOT_MS);
+        }
+
+        const holdMs = shots * AUTO_FIRE_BURST_SHOT_MS + randomBetween(55, 130);
+        scheduleAutoFireBurst(() => {
+          const releaseClient = runner.autoFireBurstClient || firstClient;
+          dispatchAutoFireMouse(releaseClient, "mouseup", 0);
+          dispatchAutoFireMouse(releaseClient, "click", 0);
+          runner.autoFireBursting = false;
+          runner.autoFireBurstClient = null;
+          runner.autoFireNextBurstAt = Date.now() + autoFireBurstCooldownMs(getMe() || me, target, shots);
+          runner.autoFireStatus = "连发完成 " + shots + " 发，等待下一组";
+          renderStatus();
+        }, holdMs);
+        return true;
       }
 
       function handleAutoFire(me) {
         if (!runner.autoFireMode) return false;
+        if (runner.autoFireBursting) {
+          return true;
+        }
         if (!me || me.life !== "Alive" || Number(me.hp || 0) <= COMBAT_LOW_HP) {
           runner.autoFireStatus = "SAFE";
           return false;
@@ -2045,35 +2173,13 @@
           runner.autoFireStatus = "锁定目标HP未知";
           return false;
         }
-        const cooldown = autoFireCooldownMs(me);
-        if (!Number.isFinite(cooldown)) {
-          runner.autoFireTarget = targetName;
-          runner.autoFireStatus = "体力不足";
-          return false;
-        }
         const now = Date.now();
-        const wait = Math.max(AUTO_FIRE_MAX_RATE_MS, cooldown);
-        if (now - runner.autoFireLastAt < wait) {
+        if (now < runner.autoFireNextBurstAt) {
           runner.autoFireTarget = targetName;
-          runner.autoFireStatus = "冷却 " + Math.max(0, Math.ceil(wait - (now - runner.autoFireLastAt))) + "ms";
+          runner.autoFireStatus = "组间等待 " + Math.max(0, Math.ceil(runner.autoFireNextBurstAt - now)) + "ms";
           return false;
         }
-        const aim = predictedAutoFirePoint(me, target);
-        const client = autoFireClientPoint(me, aim);
-        if (!client) {
-          runner.autoFireTarget = targetName;
-          runner.autoFireStatus = "目标超出画面";
-          return false;
-        }
-        dispatchAutoFireClick(client);
-        runner.autoFireLastAt = now;
-        runner.autoFireShots += 1;
-        runner.autoFireTarget = targetName;
-        runner.autoFireStatus = "射击 " + runner.autoFireTarget
-          + " HP " + Math.round(target.hpForFire)
-          + " / " + Math.round(target.dist / 100) + "m"
-          + " / 预判 " + aim.leadMs + "ms";
-        return true;
+        return startAutoFireBurst(me, target, targetName);
       }
 
       function minRichEnemyDistanceAt(x, y, enemies) {
@@ -2812,6 +2918,7 @@
         runner.huntMode = false;
         runner.autoFireMode = false;
         runner.autoFireStatus = "OFF";
+        clearAutoFireBurst(true);
         clearAttackLock("离开脱战");
         clearHuntTarget();
         clearCoinRoute();
@@ -2848,14 +2955,16 @@
         if (runner.autoFireMode === next) return;
         runner.autoFireMode = next;
         runner.autoFireLastAt = 0;
+        runner.autoFireNextBurstAt = 0;
         runner.autoFireStatus = next ? "待机" : "OFF";
         runner.autoFireTarget = "";
         if (next) {
-          push("自动射击已开启：优先锁定红圈内最低血敌人");
+          push("自动攻击已开启：使用长按连发覆盖目标");
           if (!runner.running) start();
           else setStepInterval(AUTO_FIRE_LOOP_MS);
         } else {
-          push("自动射击已关闭" + (reason ? "：" + reason : ""));
+          clearAutoFireBurst(true);
+          push("自动攻击已关闭" + (reason ? "：" + reason : ""));
           if (runner.running && !runner.combatMode) setStepInterval(STEP_TICK_MS);
         }
         renderStatus();
@@ -3153,6 +3262,7 @@
         runner.autoFireMode = false;
         runner.autoFireStatus = "OFF";
         runner.autoFireTarget = "";
+        clearAutoFireBurst(true);
         clearAttackLock("停止脚本");
         runner.projectileMotion.clear();
         if (runner.timer) {
@@ -3276,7 +3386,7 @@
         ui.combat.classList.toggle("active", !!s.combatMode);
         ui.combat.textContent = s.combatMode ? "交战 ON" : "临时交战";
         ui.autoFire.classList.toggle("active", !!s.autoFireMode);
-        ui.autoFire.textContent = s.autoFireMode ? "射击 ON" : "自动射击";
+        ui.autoFire.textContent = s.autoFireMode ? "攻击 ON" : "自动攻击";
         ui.hunt.classList.toggle("active", !!s.huntMode);
         ui.hunt.textContent = s.huntMode ? "追杀 ON" : "追杀";
       }
