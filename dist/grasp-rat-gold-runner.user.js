@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Grasp Rat Gold Runner
 // @namespace    https://grasp-rat-game.h-e.top/
-// @version      1.6.8
+// @version      1.6.9
 // @description  Auto collect coin drops with HP-drop teleport safety and stamina-fail leave fallback.
 // @match        https://grasp-rat-game.h-e.top/*
 // @run-at       document-end
@@ -510,6 +510,7 @@
         running: false,
         timer: 0,
         statusTimer: 0,
+        sidebarSafetyTimer: 0,
         lineRaf: 0,
         lineCtx: ui.lineCanvas ? ui.lineCanvas.getContext("2d") : null,
         lineDpr: 1,
@@ -542,6 +543,7 @@
         leaves: 0,
         avoidances: 0,
         staminaFailSeen: false,
+        hourlyLimitLeaveTriggered: false,
         teleportCheckUntil: 0,
         teleportCheckContext: TELEPORT_CONTEXT_GENERAL,
         teleportChatBaseline: "",
@@ -1787,6 +1789,27 @@
           || text.toLowerCase().includes("insufficient stamina");
       }
 
+      function leftSidebarText() {
+        const side = document.querySelector(".side");
+        if (!side) return "";
+        return side.innerText || side.textContent || "";
+      }
+
+      function hasHourlyStaminaLimit() {
+        return leftSidebarText().includes("1h体力限制");
+      }
+
+      function checkHourlyStaminaLimitLeave() {
+        if (!hasHourlyStaminaLimit()) {
+          runner.hourlyLimitLeaveTriggered = false;
+          return false;
+        }
+        if (runner.hourlyLimitLeaveTriggered) return true;
+        runner.hourlyLimitLeaveTriggered = true;
+        clickLeave("左侧边栏检测到1h体力限制");
+        return true;
+      }
+
       function clickLeave(reason) {
         stopMove();
         setDanger(false);
@@ -1961,6 +1984,8 @@
 
       function step() {
         try {
+          if (checkHourlyStaminaLimitLeave()) return;
+
           const me = getMe();
           if (!me) {
             stopMove();
@@ -2119,6 +2144,7 @@
         runner.lastHp = me ? Number(me.hp || 0) : null;
         runner.lastBalance = me ? Number(me.external_balance_snapshot || 0) : null;
         runner.staminaFailSeen = false;
+        runner.hourlyLimitLeaveTriggered = false;
         runner.teleportCheckUntil = 0;
         runner.teleportCheckContext = TELEPORT_CONTEXT_GENERAL;
         runner.teleportChatBaseline = "";
@@ -2155,6 +2181,7 @@
       function destroy(reason) {
         stop(reason || "destroy");
         if (runner.statusTimer) clearInterval(runner.statusTimer);
+        if (runner.sidebarSafetyTimer) clearInterval(runner.sidebarSafetyTimer);
         if (runner.lineRaf) {
           window.cancelAnimationFrame(runner.lineRaf);
           runner.lineRaf = 0;
@@ -2276,7 +2303,9 @@
       });
 
       runner.statusTimer = window.setInterval(renderStatus, 500);
+      runner.sidebarSafetyTimer = window.setInterval(checkHourlyStaminaLimitLeave, 1000);
       startLineLoop();
+      checkHourlyStaminaLimitLeave();
       renderStatus();
     }
   }
