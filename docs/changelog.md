@@ -1,5 +1,10 @@
 # Changelog
 
+## 1.6.14
+
+- `DROP TOP 5` 改为合并 `state.entities` 和 `state.minimap.points`，使用 minimap 的 `d` 字段覆盖全场玩家 Drop。
+- 同一用户在实体列表和 minimap 同时出现时取更高 Drop，并优先保留真实用户名用于点击复制。
+
 ## 1.6.13
 
 - 移除自动安全脱战中的传送流程：常态受伤和交战 `HP≤9` 都直接点击“离开”。

@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Grasp Rat Gold Runner
 // @namespace    https://grasp-rat-game.h-e.top/
-// @version      1.6.13
+// @version      1.6.14
 // @description  Auto collect coin drops with HP-drop leave safety and combat dodge support.
 // @match        https://grasp-rat-game.h-e.top/*
 // @run-at       document-end
@@ -1018,24 +1018,43 @@
         };
       }
 
+      function leaderboardNameForUser(userId) {
+        const name = knownNameForUser(userId);
+        return {
+          name: name || ("未知用户 #" + userId),
+          copyName: name
+        };
+      }
+
+      function mergeDropLeaderboardUser(byUser, userId, drop, names, source) {
+        const id = Number(userId);
+        const amount = Number(drop);
+        if (!Number.isFinite(id) || !(amount > 0)) return;
+        const existing = byUser.get(id);
+        if (!existing || amount > existing.drop || (!existing.copyName && names.copyName)) {
+          byUser.set(id, {
+            userId: id,
+            drop: amount,
+            name: names.name,
+            copyName: names.copyName,
+            source
+          });
+        }
+      }
+
       function topDropUsers() {
         const byUser = new Map();
         for (const entity of state.entities || []) {
           const userId = Number(entity && entity.user_id);
           if (!Number.isFinite(userId)) continue;
           if (entity.life && entity.life !== "Alive") continue;
-          const drop = enemyDrop(entity);
-          if (!(drop > 0)) continue;
-          const names = leaderboardNameFromEntity(entity, userId);
-          const existing = byUser.get(userId);
-          if (!existing || drop > existing.drop || (!existing.copyName && names.copyName)) {
-            byUser.set(userId, {
-              userId,
-              drop,
-              name: names.name,
-              copyName: names.copyName
-            });
-          }
+          mergeDropLeaderboardUser(byUser, userId, enemyDrop(entity), leaderboardNameFromEntity(entity, userId), "entity");
+        }
+        const minimapPoints = state.minimap && Array.isArray(state.minimap.points) ? state.minimap.points : [];
+        for (const point of minimapPoints) {
+          const userId = Number(point && (point.u ?? point.user_id));
+          const drop = Number(point && (point.d ?? point.drop ?? point.death_reward_preview ?? point.death_drop_coins));
+          mergeDropLeaderboardUser(byUser, userId, drop, leaderboardNameForUser(userId), "minimap");
         }
         return Array.from(byUser.values())
           .sort((a, b) => b.drop - a.drop || String(a.name).localeCompare(String(b.name)))

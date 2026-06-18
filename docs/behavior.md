@@ -56,15 +56,18 @@ HUD 信息块只使用普通半透明 `rgba` 背景。不要使用 `backdrop-fil
 
 ## Drop 排行榜
 
-HUD 控制区内的 `DROP TOP 5` 每 30 秒刷新一次，展示当前页面实体列表里黄色 `Drop` 数最高的 5 名玩家。
+HUD 控制区内的 `DROP TOP 5` 每 30 秒刷新一次，展示全场黄色 `Drop` 数最高的 5 名玩家。
 
-数据来源仍然是：
+数据来源会合并两路：
 
 ```js
 death_reward_preview ?? death_drop_coins ?? 0
+state.minimap.points[*].d
 ```
 
-不要用 `coins` 字段做排名。用户名优先读取实体 `name`，其次读取 `state.userNames`。如果没有真实用户名，排行榜会显示未知用户，但不会把纯 ID 或 `User id` 当成可复制用户名。
+`state.entities` 可能在不同同步状态下表现为可见实体或较完整实体列表；`state.minimap.points` 的 `u/d/x/y` 会覆盖全场小地图点，其中 `d` 是全场 Drop。排行榜按同一个用户合并两路数据并取更高 Drop。不要用 `coins` 字段做排名。
+
+用户名优先读取实体 `name`，其次读取 `state.userNames`。如果没有真实用户名，排行榜会显示未知用户，但不会把纯 ID 或 `User id` 当成可复制用户名。
 
 点击排行榜里的用户名会复制该用户名到剪贴板。复制优先使用浏览器 Clipboard API（剪贴板接口），失败时退回到临时 `textarea` 的复制方式。
 
