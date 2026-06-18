@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Grasp Rat Gold Runner
 // @namespace    https://grasp-rat-game.h-e.top/
-// @version      1.6.7
+// @version      1.6.8
 // @description  Auto collect coin drops with HP-drop teleport safety and stamina-fail leave fallback.
 // @match        https://grasp-rat-game.h-e.top/*
 // @run-at       document-end
@@ -52,6 +52,11 @@
     const DROP_CLUSTER_CM = 9000;
     const REPLAN_MS = 1800;
     const AXIS_DOMINANCE_RATIO = 1.65;
+    const HUNT_REACHED_CM = 260;
+    const HUNT_LOST_MEMORY_MS = 12000;
+    const HUNT_PREDICT_MIN_MS = 350;
+    const HUNT_PREDICT_MAX_MS = 1300;
+    const HUNT_PREDICT_DISTANCE_DIVISOR = 9000;
     const TELEPORT_CONTEXT_GENERAL = "general";
     const TELEPORT_CONTEXT_COMBAT_LOW_HP = "combat-low-hp";
     const DANGER_ID = "codex-rat-danger-vignette";
@@ -130,6 +135,10 @@
         '  </div>',
         '  <div class="crgr-body">',
         '    <label>传送坐标 <input data-crgr="teleport" value="' + DEFAULT_TELEPORT + '" /></label>',
+        '    <div class="crgr-hunt-row">',
+        '      <label>追杀ID <input data-crgr="hunt-query" placeholder="玩家ID片段" /></label>',
+        '      <button type="button" data-crgr="hunt">追杀</button>',
+        '    </div>',
         '    <div class="crgr-actions">',
         '      <button type="button" data-crgr="start">启动</button>',
         '      <button type="button" data-crgr="stop">停止</button>',
@@ -321,6 +330,12 @@
           pointer-events: auto;
         }
         #${PANEL_ID} label { display: grid; gap: 4px; color: #b9c7d8; }
+        #${PANEL_ID} .crgr-hunt-row {
+          display: grid;
+          grid-template-columns: 1fr minmax(82px, auto);
+          gap: 6px;
+          align-items: end;
+        }
         #${PANEL_ID} input {
           width: 100%;
           height: 26px;
@@ -351,10 +366,16 @@
         #${PANEL_ID} button[data-crgr="start"] { border-color: rgba(74, 222, 128, .45); color: #bbf7d0; }
         #${PANEL_ID} button[data-crgr="stop"] { border-color: rgba(251, 191, 36, .45); color: #fde68a; }
         #${PANEL_ID} button[data-crgr="combat"] { border-color: rgba(248, 113, 113, .42); color: #fecaca; }
+        #${PANEL_ID} button[data-crgr="hunt"] { border-color: rgba(250, 204, 21, .42); color: #fef3c7; }
         #${PANEL_ID} button[data-crgr="combat"].active {
           color: #fff7ed;
           background: rgba(127, 29, 29, .42);
           box-shadow: inset 0 0 18px rgba(248, 113, 113, .16), 0 0 18px rgba(248, 113, 113, .1);
+        }
+        #${PANEL_ID} button[data-crgr="hunt"].active {
+          color: #fffbeb;
+          background: rgba(113, 63, 18, .44);
+          box-shadow: inset 0 0 18px rgba(250, 204, 21, .14), 0 0 18px rgba(250, 204, 21, .08);
         }
         #${PANEL_ID} button[data-crgr="leave"] { border-color: rgba(248, 113, 113, .55); color: #fecaca; }
         #${PANEL_ID} pre {
@@ -455,6 +476,8 @@
 
       const ui = {
         teleport: root.querySelector('[data-crgr="teleport"]'),
+        huntQuery: root.querySelector('[data-crgr="hunt-query"]'),
+        hunt: root.querySelector('[data-crgr="hunt"]'),
         lineCanvas: root.querySelector('[data-crgr="line-canvas"]'),
         start: root.querySelector('[data-crgr="start"]'),
         stop: root.querySelector('[data-crgr="stop"]'),
@@ -497,6 +520,11 @@
         navTarget: null,
         planNextAt: 0,
         manualTarget: null,
+        huntMode: false,
+        huntQuery: "",
+        huntTargetId: null,
+        huntLastSeen: null,
+        huntLastSeenAt: 0,
         combatMode: false,
         combatRisk: "clear",
         combatProjectiles: 0,
@@ -650,6 +678,9 @@
       }
 
       function setManualTarget(x, y) {
+        if (runner.huntMode) {
+          setHuntMode(false, "右键坐标接管");
+        }
         runner.manualTarget = {
           x: Math.round(Number(x)),
           y: Math.round(Number(y)),
@@ -661,6 +692,47 @@
         push("右键坐标目标 " + runner.manualTarget.x + "," + runner.manualTarget.y);
         if (!runner.running) start();
         renderStatus();
+      }
+
+      function huntQueryText() {
+        return String((ui.huntQuery && ui.huntQuery.value) || runner.huntQuery || "").trim();
+      }
+
+      function clearHuntTarget() {
+        runner.huntTargetId = null;
+        runner.huntLastSeen = null;
+        runner.huntLastSeenAt = 0;
+      }
+
+      function setHuntMode(active, reason) {
+        const next = !!active;
+        const query = huntQueryText();
+        if (next && !query) {
+          runner.lastAction = "追杀：请输入玩家ID片段";
+          renderStatus();
+          return;
+        }
+        if (runner.huntMode === next && (!next || runner.huntQuery === query)) return;
+        runner.huntMode = next;
+        runner.huntQuery = next ? query : "";
+        clearHuntTarget();
+        runner.targetId = null;
+        runner.targetScore = 0;
+        runner.planNextAt = 0;
+        if (next) {
+          if (runner.manualTarget) clearManualTarget("开启自动追杀");
+          push("自动追杀已开启：ID 包含 " + query);
+          if (!runner.running) start();
+        } else {
+          if (runner.navTarget && runner.navTarget.type === "hunt") runner.navTarget = null;
+          push("自动追杀已关闭" + (reason ? "：" + reason : ""));
+        }
+        renderLines();
+        renderStatus();
+      }
+
+      function toggleHuntMode() {
+        setHuntMode(!runner.huntMode, "manual");
       }
 
       function driveManualTarget(me, label, options) {
@@ -770,9 +842,14 @@
           seen.add(key);
           const last = runner.enemyMotion.get(key);
           const moved = last && Math.hypot(x - last.x, y - last.y) >= ENEMY_MOVE_EPSILON_CM;
+          const dt = last ? Math.max(0, (now - last.lastSeenAt) / 1000) : 0;
+          const vxCmps = last && dt >= 0.05 ? (x - last.x) / dt : (last ? last.vxCmps || 0 : 0);
+          const vyCmps = last && dt >= 0.05 ? (y - last.y) / dt : (last ? last.vyCmps || 0 : 0);
           runner.enemyMotion.set(key, {
             x,
             y,
+            vxCmps,
+            vyCmps,
             lastSeenAt: now,
             lastMovedAt: moved ? now : (last ? last.lastMovedAt : 0)
           });
@@ -787,6 +864,141 @@
       function enemyMovedRecently(enemy, now) {
         const motion = runner.enemyMotion.get(enemyKey(enemy));
         return !!motion && motion.lastMovedAt > 0 && now - motion.lastMovedAt <= MOVING_ENEMY_MEMORY_MS;
+      }
+
+      function knownNameForUser(userId, fallback) {
+        const id = Number(userId);
+        if (state.userNames && typeof state.userNames.get === "function") {
+          const name = state.userNames.get(id);
+          if (name) return name;
+        }
+        return fallback || ("User " + userId);
+      }
+
+      function huntCandidateFromEntity(entity, me) {
+        const userId = Number(entity && entity.user_id);
+        const x = Number(entity && entity.x);
+        const y = Number(entity && entity.y);
+        if (!Number.isFinite(userId) || !Number.isFinite(x) || !Number.isFinite(y)) return null;
+        if (Number(userId) === Number(state.currentUserId)) return null;
+        if (entity.life && entity.life !== "Alive") return null;
+        return {
+          source: "entity",
+          userId,
+          idText: String(userId),
+          name: entity.name || knownNameForUser(userId),
+          x,
+          y,
+          raw: entity,
+          dist: Math.hypot(x - Number(me.x), y - Number(me.y)),
+          sourcePenalty: 0
+        };
+      }
+
+      function huntCandidateFromMinimap(point, me, liveIds) {
+        const userId = Number(point && (point.u ?? point.user_id));
+        const x = Number(point && point.x);
+        const y = Number(point && point.y);
+        if (!Number.isFinite(userId) || !Number.isFinite(x) || !Number.isFinite(y)) return null;
+        if (Number(userId) === Number(state.currentUserId)) return null;
+        if (liveIds && liveIds.has(userId)) return null;
+        return {
+          source: "minimap",
+          userId,
+          idText: String(userId),
+          name: knownNameForUser(userId),
+          x,
+          y,
+          raw: point,
+          dist: Math.hypot(x - Number(me.x), y - Number(me.y)),
+          sourcePenalty: 240000
+        };
+      }
+
+      function huntCandidates(me) {
+        const out = [];
+        const liveIds = new Set();
+        for (const entity of state.entities || []) {
+          const candidate = huntCandidateFromEntity(entity, me);
+          if (!candidate) continue;
+          liveIds.add(candidate.userId);
+          out.push(candidate);
+        }
+
+        const bestMinimapById = new Map();
+        const points = state.minimap && Array.isArray(state.minimap.points) ? state.minimap.points : [];
+        for (const point of points) {
+          const candidate = huntCandidateFromMinimap(point, me, liveIds);
+          if (!candidate || !Number.isFinite(candidate.dist)) continue;
+          const existing = bestMinimapById.get(candidate.userId);
+          if (!existing || candidate.dist < existing.dist) bestMinimapById.set(candidate.userId, candidate);
+        }
+        for (const candidate of bestMinimapById.values()) out.push(candidate);
+        return out.filter(candidate => Number.isFinite(candidate.dist));
+      }
+
+      function huntMatchRank(candidate, query) {
+        const id = candidate.idText.toLowerCase();
+        const needle = String(query || "").trim().toLowerCase();
+        if (!needle) return Infinity;
+        if (id === needle) return 0;
+        if (id.startsWith(needle)) return 1;
+        if (id.includes(needle)) return 2;
+        return Infinity;
+      }
+
+      function findHuntTarget(me, query) {
+        const candidates = huntCandidates(me)
+          .map(candidate => ({
+            ...candidate,
+            matchRank: huntMatchRank(candidate, query)
+          }))
+          .filter(candidate => Number.isFinite(candidate.matchRank));
+        if (!candidates.length) return null;
+
+        if (runner.huntTargetId !== null) {
+          const current = candidates.find(candidate => Number(candidate.userId) === Number(runner.huntTargetId));
+          if (current) return current;
+        }
+
+        return candidates.sort((a, b) =>
+          a.matchRank - b.matchRank
+          || a.sourcePenalty - b.sourcePenalty
+          || a.dist - b.dist
+          || a.userId - b.userId
+        )[0];
+      }
+
+      function huntVelocityCmps(candidate) {
+        const rawVx = numberFrom(candidate.raw, ["vx", "vel_x", "velocity_x", "velocityX", "speed_x", "speedX"], NaN);
+        const rawVy = numberFrom(candidate.raw, ["vy", "vel_y", "velocity_y", "velocityY", "speed_y", "speedY"], NaN);
+        if (Number.isFinite(rawVx) && Number.isFinite(rawVy) && Math.hypot(rawVx, rawVy) > 0.01) {
+          const tickMs = Math.max(1, Number(state.serverTickMs) || 50);
+          const rawSpeed = Math.hypot(rawVx, rawVy);
+          const scale = rawSpeed <= 250 ? 1000 / tickMs : 1;
+          return { vx: rawVx * scale, vy: rawVy * scale };
+        }
+        const motion = runner.enemyMotion.get(String(candidate.userId));
+        if (motion && (Math.abs(motion.vxCmps || 0) > 0.01 || Math.abs(motion.vyCmps || 0) > 0.01)) {
+          return { vx: motion.vxCmps || 0, vy: motion.vyCmps || 0 };
+        }
+        return { vx: 0, vy: 0 };
+      }
+
+      function predictedHuntPoint(candidate, me) {
+        const dist = Math.hypot(Number(candidate.x) - Number(me.x), Number(candidate.y) - Number(me.y));
+        const leadMs = Math.min(
+          HUNT_PREDICT_MAX_MS,
+          Math.max(HUNT_PREDICT_MIN_MS, dist / HUNT_PREDICT_DISTANCE_DIVISOR * 1000)
+        );
+        const velocity = huntVelocityCmps(candidate);
+        const leadSeconds = leadMs / 1000;
+        return {
+          x: Number(candidate.x) + velocity.vx * leadSeconds,
+          y: Number(candidate.y) + velocity.vy * leadSeconds,
+          leadMs,
+          speed: Math.hypot(velocity.vx, velocity.vy)
+        };
       }
 
       function liveEnemies(me, limitCm) {
@@ -1159,6 +1371,90 @@
           + " 距离 " + runner.lastThreat.dist + "cm Drop " + runner.lastThreat.drop;
       }
 
+      function driveHuntTarget(me) {
+        if (!runner.huntMode) return false;
+        const query = huntQueryText();
+        if (!query) {
+          clearHuntTarget();
+          stopMove();
+          runner.lastAction = "追杀：请输入玩家ID片段";
+          return true;
+        }
+        if (query !== runner.huntQuery) {
+          runner.huntQuery = query;
+          clearHuntTarget();
+        }
+
+        const now = Date.now();
+        const target = findHuntTarget(me, query);
+        let point = null;
+        let label = "";
+        let source = "";
+        let distToEntity = 0;
+
+        if (target) {
+          const predicted = predictedHuntPoint(target, me);
+          point = predicted;
+          label = target.name + " #" + target.userId;
+          source = target.source === "entity" ? "实时" : "快照";
+          distToEntity = target.dist;
+          runner.huntTargetId = target.userId;
+          runner.huntLastSeen = {
+            userId: target.userId,
+            name: target.name,
+            x: Number(target.x),
+            y: Number(target.y),
+            predictedX: Number(point.x),
+            predictedY: Number(point.y),
+            source: target.source
+          };
+          runner.huntLastSeenAt = now;
+        } else if (runner.huntLastSeen && now - runner.huntLastSeenAt <= HUNT_LOST_MEMORY_MS) {
+          point = {
+            x: Number(runner.huntLastSeen.predictedX || runner.huntLastSeen.x),
+            y: Number(runner.huntLastSeen.predictedY || runner.huntLastSeen.y),
+            leadMs: 0,
+            speed: 0
+          };
+          label = runner.huntLastSeen.name + " #" + runner.huntLastSeen.userId;
+          source = "记忆";
+          distToEntity = Math.hypot(point.x - Number(me.x), point.y - Number(me.y));
+        } else {
+          clearHuntTarget();
+          stopMove();
+          runner.targetId = null;
+          runner.targetScore = 0;
+          runner.lastAction = "追杀：未找到匹配 ID " + query;
+          return true;
+        }
+
+        const rx = Number(point.x) - Number(me.x);
+        const ry = Number(point.y) - Number(me.y);
+        const dist = Math.hypot(rx, ry);
+        runner.targetId = null;
+        runner.targetScore = 0;
+        setDanger(false);
+        setNavigationTarget(point.x, point.y, "hunt");
+
+        if (!Number.isFinite(dist)) {
+          stopMove();
+          runner.lastAction = "追杀：" + label + " 坐标异常";
+          return true;
+        }
+        if (dist <= HUNT_REACHED_CM) {
+          stopMove();
+          runner.lastAction = "追杀：" + label + " 已贴近，保持观察";
+          return true;
+        }
+
+        moveToward(rx, ry);
+        runner.lastAction = "追杀：" + label
+          + " / " + source
+          + " / 距离 " + Math.round(distToEntity || dist)
+          + " / 预判 " + Math.round(point.leadMs || 0) + "ms";
+        return true;
+      }
+
       function canvasRect() {
         const worldCanvas = typeof canvas !== "undefined" ? canvas : document.getElementById("world");
         if (worldCanvas && typeof worldCanvas.getBoundingClientRect === "function") {
@@ -1497,6 +1793,8 @@
         runner.leaves += 1;
         runner.running = false;
         runner.combatMode = false;
+        runner.huntMode = false;
+        clearHuntTarget();
         runner.combatRisk = "clear";
         runner.staminaFailSeen = true;
         if (runner.timer) {
@@ -1735,6 +2033,8 @@
 
           if (handleCombatMode(me, hp)) return;
 
+          if (driveHuntTarget(me)) return;
+
           const threats = richEnemies(me, RICH_ENEMY_SCAN_CM);
           const urgentThreat = escapeEnemies(me, RICH_ENEMY_ESCAPE_CM)[0];
           if (urgentThreat) {
@@ -1834,6 +2134,8 @@
       function stop(reason) {
         runner.running = false;
         runner.combatMode = false;
+        runner.huntMode = false;
+        clearHuntTarget();
         runner.combatRisk = "clear";
         runner.combatProjectiles = 0;
         runner.combatTargets = 0;
@@ -1870,12 +2172,19 @@
       function snapshot() {
         const me = getMe();
         const enemies = me ? richEnemies(me, RICH_ENEMY_SCAN_CM) : [];
-        const drop = me && !runner.combatMode ? nearestDrop(me, enemies) : null;
+        const drop = me && !runner.combatMode && !runner.huntMode ? nearestDrop(me, enemies) : null;
         const threat = enemies[0] || runner.lastThreat;
         const manual = runner.manualTarget;
+        const huntLabel = runner.huntMode
+          ? ("HUNT " + (runner.huntTargetId || runner.huntQuery || "-"))
+          : "";
         return {
           running: runner.running,
           combatMode: runner.combatMode,
+          huntMode: runner.huntMode,
+          huntQuery: runner.huntQuery,
+          huntTargetId: runner.huntTargetId,
+          huntLastSeen: runner.huntLastSeen,
           combatRisk: runner.combatRisk,
           combatProjectiles: runner.combatProjectiles,
           combatTargets: runner.combatTargets,
@@ -1888,7 +2197,7 @@
           teleports: runner.teleports,
           leaves: runner.leaves,
           avoidances: runner.avoidances,
-          target: manual ? (manual.x + "," + manual.y) : runner.targetId,
+          target: huntLabel || (manual ? (manual.x + "," + manual.y) : runner.targetId),
           nearest: drop ? Math.round(drop.dist) : "-",
           targetScore: runner.targetScore ? runner.targetScore.toFixed(3) : "-",
           moveMode: runner.lastMoveMode,
@@ -1908,11 +2217,11 @@
       function renderStatus() {
         const s = snapshot();
         root.classList.toggle("running", !!s.running);
-        ui.mode.textContent = s.combatMode ? "COMBAT" : (s.running ? "ACTIVE" : "STANDBY");
+        ui.mode.textContent = s.combatMode ? "COMBAT" : s.huntMode ? "HUNT" : (s.running ? "ACTIVE" : "STANDBY");
         ui.action.textContent = s.error ? ("ERROR: " + s.error) : (s.action || "等待指令");
         ui.hp.textContent = s.hp ? String(s.hp) : "--";
         ui.gain.textContent = "+" + (s.delta || 0);
-        ui.target.textContent = s.combatMode ? "COMBAT" : (s.target ? String(s.target) : "--");
+        ui.target.textContent = s.combatMode ? "COMBAT" : s.huntMode ? ("HUNT " + (s.huntTargetId || s.huntQuery || "-")) : (s.target ? String(s.target) : "--");
         ui.move.textContent = s.moveMode || "idle";
         ui.threat.textContent = s.combatMode
           ? ((s.combatManualOverride ? "手动 / " : "") + "弹体 " + s.combatProjectiles + " / 标记 " + s.combatTargets + " / " + s.combatRisk)
@@ -1923,12 +2232,16 @@
         ui.safety.textContent = "TP " + s.teleports + " / LEAVE " + s.leaves + " / EVADE " + s.avoidances;
         ui.status.textContent = s.combatMode
           ? ("COMBAT / " + (s.combatManualOverride ? "MANUAL / " : "") + "BULLETS " + s.combatProjectiles + " / TARGETS " + s.combatTargets)
+          : s.huntMode
+          ? ("HUNT / QUERY " + (s.huntQuery || "-") + " / TARGET " + (s.huntTargetId || "-"))
           : "BAL " + (s.balance ?? "--")
             + " / VALUE " + (s.value ?? "--")
             + " / NEAREST " + s.nearest
             + " / SCORE " + s.targetScore;
         ui.combat.classList.toggle("active", !!s.combatMode);
         ui.combat.textContent = s.combatMode ? "交战 ON" : "临时交战";
+        ui.hunt.classList.toggle("active", !!s.huntMode);
+        ui.hunt.textContent = s.huntMode ? "追杀 ON" : "追杀";
       }
 
       runner.start = start;
@@ -1937,6 +2250,7 @@
       runner.teleport = reason => teleport(reason || "manual", true);
       runner.leave = reason => clickLeave(reason || "manual");
       runner.setCombatMode = setCombatMode;
+      runner.setHuntMode = setHuntMode;
       runner.setManualTarget = setManualTarget;
       runner.clearManualTarget = clearManualTarget;
       runner.status = snapshot;
@@ -1948,6 +2262,13 @@
       ui.start.addEventListener("click", start);
       ui.stop.addEventListener("click", () => stop("manual"));
       ui.combat.addEventListener("click", toggleCombatMode);
+      ui.hunt.addEventListener("click", toggleHuntMode);
+      ui.huntQuery.addEventListener("keydown", event => {
+        if (event.key === "Enter") {
+          event.preventDefault();
+          setHuntMode(true, "enter");
+        }
+      });
       ui.leave.addEventListener("click", () => clickLeave("manual"));
       ui.collapse.addEventListener("click", () => {
         root.classList.toggle("collapsed");
