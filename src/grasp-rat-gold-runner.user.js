@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Grasp Rat Gold Runner
 // @namespace    https://grasp-rat-game.h-e.top/
-// @version      1.6.11
+// @version      1.6.12
 // @description  Auto collect coin drops with HP-drop teleport safety and stamina-fail leave fallback.
 // @match        https://grasp-rat-game.h-e.top/*
 // @run-at       document-end
@@ -60,6 +60,7 @@
     const ROUTE_MAX_POINTS_SPARSE = 2;
     const ROUTE_SWITCH_FACTOR = 1.14;
     const REPLAN_MS = 1800;
+    const DROP_LEADERBOARD_REFRESH_MS = 30000;
     const AXIS_DOMINANCE_RATIO = 1.65;
     const HUNT_REACHED_CM = 260;
     const HUNT_LOST_MEMORY_MS = 12000;
@@ -147,6 +148,10 @@
         '    <div class="crgr-hunt-row">',
         '      <label>追杀用户名 <input data-crgr="hunt-query" placeholder="用户名片段" /></label>',
         '      <button type="button" data-crgr="hunt">追杀</button>',
+        '    </div>',
+        '    <div class="crgr-drop-board">',
+        '      <div class="crgr-drop-head"><span>DROP TOP 5</span><small data-crgr="drop-refresh">--</small></div>',
+        '      <ol data-crgr="drop-list"><li>扫描中</li></ol>',
         '    </div>',
         '    <div class="crgr-actions">',
         '      <button type="button" data-crgr="start">启动</button>',
@@ -345,6 +350,77 @@
           gap: 6px;
           align-items: end;
         }
+        #${PANEL_ID} .crgr-drop-board {
+          padding: 7px 8px;
+          background: rgba(2, 6, 23, .28);
+          border: 1px solid rgba(125, 211, 252, .12);
+        }
+        #${PANEL_ID} .crgr-drop-head {
+          display: flex;
+          align-items: center;
+          justify-content: space-between;
+          gap: 8px;
+          margin-bottom: 5px;
+          color: rgba(186, 230, 253, .74);
+        }
+        #${PANEL_ID} .crgr-drop-head span {
+          color: #fef3c7;
+          font-size: clamp(12px, .62vw, 18px);
+          font-weight: 700;
+          letter-spacing: .08em;
+        }
+        #${PANEL_ID} .crgr-drop-head small {
+          color: rgba(186, 230, 253, .55);
+          letter-spacing: 0;
+          white-space: nowrap;
+        }
+        #${PANEL_ID} .crgr-drop-board ol {
+          display: grid;
+          gap: 3px;
+          margin: 0;
+          padding: 0;
+          list-style: none;
+        }
+        #${PANEL_ID} .crgr-drop-board li {
+          display: grid;
+          grid-template-columns: 24px minmax(0, 1fr) minmax(44px, auto);
+          gap: 6px;
+          align-items: center;
+          min-height: 26px;
+          color: rgba(226, 232, 240, .78);
+          font-size: clamp(12px, .62vw, 18px);
+        }
+        #${PANEL_ID} .crgr-drop-rank {
+          color: rgba(250, 204, 21, .78);
+          text-align: right;
+          font-variant-numeric: tabular-nums;
+        }
+        #${PANEL_ID} .crgr-drop-name {
+          min-width: 0;
+          height: 26px;
+          padding: 0 6px;
+          color: #e0f2fe;
+          text-align: left;
+          overflow: hidden;
+          text-overflow: ellipsis;
+          white-space: nowrap;
+          background: rgba(15, 23, 42, .16);
+          border-color: rgba(125, 211, 252, .12);
+        }
+        #${PANEL_ID} .crgr-drop-name:hover {
+          color: #fef9c3;
+          background: rgba(113, 63, 18, .4);
+        }
+        #${PANEL_ID} .crgr-drop-name[disabled] {
+          color: rgba(148, 163, 184, .72);
+          cursor: default;
+        }
+        #${PANEL_ID} .crgr-drop-value {
+          color: #fde68a;
+          text-align: right;
+          font-weight: 700;
+          font-variant-numeric: tabular-nums;
+        }
         #${PANEL_ID} input {
           width: 100%;
           height: 26px;
@@ -372,6 +448,9 @@
           pointer-events: auto;
         }
         #${PANEL_ID} button:hover { background: rgba(8, 47, 73, .72); }
+        #${PANEL_ID} button.crgr-drop-name {
+          min-height: 26px;
+        }
         #${PANEL_ID} button[data-crgr="start"] { border-color: rgba(74, 222, 128, .45); color: #bbf7d0; }
         #${PANEL_ID} button[data-crgr="stop"] { border-color: rgba(251, 191, 36, .45); color: #fde68a; }
         #${PANEL_ID} button[data-crgr="combat"] { border-color: rgba(248, 113, 113, .42); color: #fecaca; }
@@ -488,6 +567,8 @@
         huntQuery: root.querySelector('[data-crgr="hunt-query"]'),
         hunt: root.querySelector('[data-crgr="hunt"]'),
         lineCanvas: root.querySelector('[data-crgr="line-canvas"]'),
+        dropRefresh: root.querySelector('[data-crgr="drop-refresh"]'),
+        dropList: root.querySelector('[data-crgr="drop-list"]'),
         start: root.querySelector('[data-crgr="start"]'),
         stop: root.querySelector('[data-crgr="stop"]'),
         combat: root.querySelector('[data-crgr="combat"]'),
@@ -520,6 +601,7 @@
         timer: 0,
         statusTimer: 0,
         sidebarSafetyTimer: 0,
+        dropLeaderboardTimer: 0,
         lineRaf: 0,
         lineCtx: ui.lineCanvas ? ui.lineCanvas.getContext("2d") : null,
         lineDpr: 1,
@@ -935,6 +1017,121 @@
 
       function huntNameFromEntity(entity, userId) {
         return cleanUserName(entity && entity.name, userId) || knownNameForUser(userId);
+      }
+
+      function leaderboardNameFromEntity(entity, userId) {
+        const name = huntNameFromEntity(entity, userId);
+        return {
+          name: name || ("未知用户 #" + userId),
+          copyName: name
+        };
+      }
+
+      function topDropUsers() {
+        const byUser = new Map();
+        for (const entity of state.entities || []) {
+          const userId = Number(entity && entity.user_id);
+          if (!Number.isFinite(userId)) continue;
+          if (entity.life && entity.life !== "Alive") continue;
+          const drop = enemyDrop(entity);
+          if (!(drop > 0)) continue;
+          const names = leaderboardNameFromEntity(entity, userId);
+          const existing = byUser.get(userId);
+          if (!existing || drop > existing.drop || (!existing.copyName && names.copyName)) {
+            byUser.set(userId, {
+              userId,
+              drop,
+              name: names.name,
+              copyName: names.copyName
+            });
+          }
+        }
+        return Array.from(byUser.values())
+          .sort((a, b) => b.drop - a.drop || String(a.name).localeCompare(String(b.name)))
+          .slice(0, 5);
+      }
+
+      function formatClock(ms) {
+        const date = new Date(Number.isFinite(Number(ms)) ? Number(ms) : Date.now());
+        const pad = value => String(value).padStart(2, "0");
+        return pad(date.getHours()) + ":" + pad(date.getMinutes()) + ":" + pad(date.getSeconds());
+      }
+
+      function copyText(text) {
+        const value = String(text || "");
+        if (!value) return Promise.reject(new Error("empty text"));
+        if (navigator.clipboard && typeof navigator.clipboard.writeText === "function") {
+          return navigator.clipboard.writeText(value);
+        }
+        return new Promise((resolve, reject) => {
+          try {
+            const textarea = document.createElement("textarea");
+            textarea.value = value;
+            textarea.setAttribute("readonly", "");
+            textarea.style.position = "fixed";
+            textarea.style.left = "-9999px";
+            textarea.style.top = "0";
+            document.body.appendChild(textarea);
+            textarea.select();
+            textarea.setSelectionRange(0, value.length);
+            const ok = document.execCommand("copy");
+            textarea.remove();
+            if (ok) resolve();
+            else reject(new Error("copy command failed"));
+          } catch (err) {
+            reject(err);
+          }
+        });
+      }
+
+      function renderDropLeaderboard() {
+        if (!ui.dropList || !ui.dropRefresh) return;
+        const rows = topDropUsers();
+        const fragment = document.createDocumentFragment();
+        if (!rows.length) {
+          const item = document.createElement("li");
+          item.textContent = "暂无 Drop 数据";
+          fragment.appendChild(item);
+        } else {
+          rows.forEach((row, index) => {
+            const item = document.createElement("li");
+            const rank = document.createElement("span");
+            const name = document.createElement("button");
+            const value = document.createElement("span");
+            rank.className = "crgr-drop-rank";
+            rank.textContent = "#" + (index + 1);
+            name.type = "button";
+            name.className = "crgr-drop-name";
+            name.textContent = row.name;
+            name.title = row.copyName ? "点击复制用户名" : "未识别到真实用户名";
+            if (row.copyName) name.dataset.copyName = row.copyName;
+            else name.disabled = true;
+            value.className = "crgr-drop-value";
+            value.textContent = String(Math.round(row.drop));
+            item.appendChild(rank);
+            item.appendChild(name);
+            item.appendChild(value);
+            fragment.appendChild(item);
+          });
+        }
+        ui.dropList.replaceChildren(fragment);
+        ui.dropRefresh.textContent = "刷新 " + formatClock(Date.now());
+      }
+
+      function handleDropLeaderboardClick(event) {
+        const button = event.target && event.target.closest ? event.target.closest(".crgr-drop-name") : null;
+        if (!button || !ui.dropList || !ui.dropList.contains(button) || !button.dataset.copyName) return;
+        const name = button.dataset.copyName;
+        copyText(name)
+          .then(() => {
+            runner.lastAction = "已复制用户名：" + name;
+            ui.dropRefresh.textContent = "已复制 " + formatClock(Date.now());
+            renderStatus();
+          })
+          .catch(err => {
+            runner.lastError = "复制用户名失败：" + String(err && err.message || err);
+            renderStatus();
+          });
       }
 
       function huntCandidateFromEntity(entity, me) {
@@ -2476,6 +2673,7 @@
         stop(reason || "destroy");
         if (runner.statusTimer) clearInterval(runner.statusTimer);
         if (runner.sidebarSafetyTimer) clearInterval(runner.sidebarSafetyTimer);
+        if (runner.dropLeaderboardTimer) clearInterval(runner.dropLeaderboardTimer);
         if (runner.lineRaf) {
           window.cancelAnimationFrame(runner.lineRaf);
           runner.lineRaf = 0;
@@ -2597,6 +2795,7 @@
         }
       });
       ui.leave.addEventListener("click", () => clickLeave("manual"));
+      ui.dropList.addEventListener("click", handleDropLeaderboardClick);
       ui.collapse.addEventListener("click", () => {
         root.classList.toggle("collapsed");
         ui.collapse.textContent = root.classList.contains("collapsed") ? "SHOW" : "HUD";
@@ -2604,8 +2803,10 @@
 
       runner.statusTimer = window.setInterval(renderStatus, 500);
       runner.sidebarSafetyTimer = window.setInterval(checkHourlyStaminaLimitLeave, 1000);
+      runner.dropLeaderboardTimer = window.setInterval(renderDropLeaderboard, DROP_LEADERBOARD_REFRESH_MS);
       startLineLoop();
       checkHourlyStaminaLimitLeave();
+      renderDropLeaderboard();
       renderStatus();
     }
   }

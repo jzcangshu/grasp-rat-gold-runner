@@ -54,6 +54,20 @@ death_reward_preview ?? death_drop_coins ?? 0
 
 HUD 信息块只使用普通半透明 `rgba` 背景。不要使用 `backdrop-filter`（背景滤镜）或 `-webkit-backdrop-filter`（WebKit 背景滤镜），避免毛玻璃造成额外渲染开销。
 
+## Drop 排行榜
+
+HUD 控制区内的 `DROP TOP 5` 每 30 秒刷新一次，展示当前页面实体列表里黄色 `Drop` 数最高的 5 名玩家。
+
+数据来源仍然是：
+
+```js
+death_reward_preview ?? death_drop_coins ?? 0
+```
+
+不要用 `coins` 字段做排名。用户名优先读取实体 `name`，其次读取 `state.userNames`。如果没有真实用户名，排行榜会显示未知用户，但不会把纯 ID 或 `User id` 当成可复制用户名。
+
+点击排行榜里的用户名会复制该用户名到剪贴板。复制优先使用浏览器 Clipboard API（剪贴板接口），失败时退回到临时 `textarea` 的复制方式。
+
 ## 临时交战模式
 
 左下角“临时交战”按钮用于切换模式。开启后：
