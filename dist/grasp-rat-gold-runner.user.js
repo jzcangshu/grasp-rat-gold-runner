@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Grasp Rat Gold Runner
 // @namespace    https://grasp-rat-game.h-e.top/
-// @version      1.6.9
+// @version      1.6.10
 // @description  Auto collect coin drops with HP-drop teleport safety and stamina-fail leave fallback.
 // @match        https://grasp-rat-game.h-e.top/*
 // @run-at       document-end
@@ -136,7 +136,7 @@
         '  <div class="crgr-body">',
         '    <label>传送坐标 <input data-crgr="teleport" value="' + DEFAULT_TELEPORT + '" /></label>',
         '    <div class="crgr-hunt-row">',
-        '      <label>追杀ID <input data-crgr="hunt-query" placeholder="玩家ID片段" /></label>',
+        '      <label>追杀用户名 <input data-crgr="hunt-query" placeholder="用户名片段" /></label>',
         '      <button type="button" data-crgr="hunt">追杀</button>',
         '    </div>',
         '    <div class="crgr-actions">',
@@ -524,6 +524,7 @@
         huntMode: false,
         huntQuery: "",
         huntTargetId: null,
+        huntTargetName: "",
         huntLastSeen: null,
         huntLastSeenAt: 0,
         combatMode: false,
@@ -702,6 +703,7 @@
 
       function clearHuntTarget() {
         runner.huntTargetId = null;
+        runner.huntTargetName = "";
         runner.huntLastSeen = null;
         runner.huntLastSeenAt = 0;
       }
@@ -710,7 +712,7 @@
         const next = !!active;
         const query = huntQueryText();
         if (next && !query) {
-          runner.lastAction = "追杀：请输入玩家ID片段";
+          runner.lastAction = "追杀：请输入用户名片段";
           renderStatus();
           return;
         }
@@ -723,7 +725,7 @@
         runner.planNextAt = 0;
         if (next) {
           if (runner.manualTarget) clearManualTarget("开启自动追杀");
-          push("自动追杀已开启：ID 包含 " + query);
+          push("自动追杀已开启：用户名包含 " + query);
           if (!runner.running) start();
         } else {
           if (runner.navTarget && runner.navTarget.type === "hunt") runner.navTarget = null;
@@ -868,13 +870,30 @@
         return !!motion && motion.lastMovedAt > 0 && now - motion.lastMovedAt <= MOVING_ENEMY_MEMORY_MS;
       }
 
-      function knownNameForUser(userId, fallback) {
+      function cleanUserName(value, userId) {
+        const name = String(value || "").trim();
+        const generatedSuffix = String(userId || "").trim();
+        if (!name || !generatedSuffix) return name;
+        const lower = name.toLowerCase();
+        if (name === generatedSuffix
+          || lower === ("user " + generatedSuffix).toLowerCase()
+          || lower === ("#" + generatedSuffix).toLowerCase()) {
+          return "";
+        }
+        return name;
+      }
+
+      function knownNameForUser(userId) {
         const id = Number(userId);
         if (state.userNames && typeof state.userNames.get === "function") {
-          const name = state.userNames.get(id);
-          if (name) return name;
+          const name = state.userNames.get(id) || state.userNames.get(String(userId));
+          if (name) return cleanUserName(name, userId);
         }
-        return fallback || ("User " + userId);
+        return "";
+      }
+
+      function huntNameFromEntity(entity, userId) {
+        return cleanUserName(entity && entity.name, userId) || knownNameForUser(userId);
       }
 
       function huntCandidateFromEntity(entity, me) {
@@ -884,11 +903,12 @@
         if (!Number.isFinite(userId) || !Number.isFinite(x) || !Number.isFinite(y)) return null;
         if (Number(userId) === Number(state.currentUserId)) return null;
         if (entity.life && entity.life !== "Alive") return null;
+        const name = huntNameFromEntity(entity, userId);
+        if (!name) return null;
         return {
           source: "entity",
           userId,
-          idText: String(userId),
-          name: entity.name || knownNameForUser(userId),
+          name,
           x,
           y,
           raw: entity,
@@ -904,11 +924,12 @@
         if (!Number.isFinite(userId) || !Number.isFinite(x) || !Number.isFinite(y)) return null;
         if (Number(userId) === Number(state.currentUserId)) return null;
         if (liveIds && liveIds.has(userId)) return null;
+        const name = knownNameForUser(userId);
+        if (!name) return null;
         return {
           source: "minimap",
           userId,
-          idText: String(userId),
-          name: knownNameForUser(userId),
+          name,
           x,
           y,
           raw: point,
@@ -940,12 +961,13 @@
       }
 
       function huntMatchRank(candidate, query) {
-        const id = candidate.idText.toLowerCase();
+        const name = cleanUserName(candidate && candidate.name).toLowerCase();
         const needle = String(query || "").trim().toLowerCase();
         if (!needle) return Infinity;
-        if (id === needle) return 0;
-        if (id.startsWith(needle)) return 1;
-        if (id.includes(needle)) return 2;
+        if (!name) return Infinity;
+        if (name === needle) return 0;
+        if (name.startsWith(needle)) return 1;
+        if (name.includes(needle)) return 2;
         return Infinity;
       }
 
@@ -1379,7 +1401,7 @@
         if (!query) {
           clearHuntTarget();
           stopMove();
-          runner.lastAction = "追杀：请输入玩家ID片段";
+          runner.lastAction = "追杀：请输入用户名片段";
           return true;
         }
         if (query !== runner.huntQuery) {
@@ -1401,6 +1423,7 @@
           source = target.source === "entity" ? "实时" : "快照";
           distToEntity = target.dist;
           runner.huntTargetId = target.userId;
+          runner.huntTargetName = target.name;
           runner.huntLastSeen = {
             userId: target.userId,
             name: target.name,
@@ -1426,7 +1449,7 @@
           stopMove();
           runner.targetId = null;
           runner.targetScore = 0;
-          runner.lastAction = "追杀：未找到匹配 ID " + query;
+          runner.lastAction = "追杀：未找到匹配用户名 " + query;
           return true;
         }
 
@@ -2203,7 +2226,7 @@
         const threat = enemies[0] || runner.lastThreat;
         const manual = runner.manualTarget;
         const huntLabel = runner.huntMode
-          ? ("HUNT " + (runner.huntTargetId || runner.huntQuery || "-"))
+          ? ("HUNT " + (runner.huntTargetName || (runner.huntLastSeen && runner.huntLastSeen.name) || runner.huntQuery || "-"))
           : "";
         return {
           running: runner.running,
@@ -2211,6 +2234,7 @@
           huntMode: runner.huntMode,
           huntQuery: runner.huntQuery,
           huntTargetId: runner.huntTargetId,
+          huntTargetName: runner.huntTargetName || (runner.huntLastSeen && runner.huntLastSeen.name) || "",
           huntLastSeen: runner.huntLastSeen,
           combatRisk: runner.combatRisk,
           combatProjectiles: runner.combatProjectiles,
@@ -2248,7 +2272,7 @@
         ui.action.textContent = s.error ? ("ERROR: " + s.error) : (s.action || "等待指令");
         ui.hp.textContent = s.hp ? String(s.hp) : "--";
         ui.gain.textContent = "+" + (s.delta || 0);
-        ui.target.textContent = s.combatMode ? "COMBAT" : s.huntMode ? ("HUNT " + (s.huntTargetId || s.huntQuery || "-")) : (s.target ? String(s.target) : "--");
+        ui.target.textContent = s.combatMode ? "COMBAT" : s.huntMode ? ("HUNT " + (s.huntTargetName || s.huntQuery || "-")) : (s.target ? String(s.target) : "--");
         ui.move.textContent = s.moveMode || "idle";
         ui.threat.textContent = s.combatMode
           ? ((s.combatManualOverride ? "手动 / " : "") + "弹体 " + s.combatProjectiles + " / 标记 " + s.combatTargets + " / " + s.combatRisk)
@@ -2260,7 +2284,7 @@
         ui.status.textContent = s.combatMode
           ? ("COMBAT / " + (s.combatManualOverride ? "MANUAL / " : "") + "BULLETS " + s.combatProjectiles + " / TARGETS " + s.combatTargets)
           : s.huntMode
-          ? ("HUNT / QUERY " + (s.huntQuery || "-") + " / TARGET " + (s.huntTargetId || "-"))
+          ? ("HUNT / QUERY " + (s.huntQuery || "-") + " / TARGET " + (s.huntTargetName || "-"))
           : "BAL " + (s.balance ?? "--")
             + " / VALUE " + (s.value ?? "--")
             + " / NEAREST " + s.nearest
