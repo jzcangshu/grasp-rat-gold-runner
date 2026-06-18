@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Grasp Rat Gold Runner
 // @namespace    https://grasp-rat-game.h-e.top/
-// @version      1.6.16
+// @version      1.6.17
 // @description  Auto collect coin drops with HP-drop leave safety and combat dodge support.
 // @match        https://grasp-rat-game.h-e.top/*
 // @run-at       document-end
@@ -144,6 +144,10 @@
         '    <strong data-crgr="mode">STANDBY</strong>',
         '    <button type="button" data-crgr="collapse" title="折叠/展开">HUD</button>',
         '  </div>',
+        '  <div class="crgr-attack-lock">',
+        '    <div class="crgr-attack-head"><span>ATTACK BUFFER</span><small data-crgr="attack-lock-summary">AUTO</small></div>',
+        '    <div class="crgr-attack-list" data-crgr="attack-list"><button type="button" disabled>扫描中</button></div>',
+        '  </div>',
         '  <div class="crgr-core">',
         '    <div class="crgr-reticle"><span></span><span></span><span></span><span></span></div>',
         '    <div class="crgr-action" data-crgr="action">等待启动</div>',
@@ -279,7 +283,7 @@
           transform: translateX(-50%);
           width: min(720px, calc(100% - 40px));
           display: grid;
-          grid-template-columns: repeat(5, 1fr);
+          grid-template-columns: repeat(4, 1fr);
           gap: 8px;
         }
         #${PANEL_ID} .crgr-grid div,
@@ -342,6 +346,79 @@
           position: absolute;
           right: 18px;
           bottom: 86px;
+        }
+        #${PANEL_ID} .crgr-attack-lock {
+          position: absolute;
+          left: 18px;
+          top: 184px;
+          width: min(360px, calc(100% - 36px));
+          max-height: min(38vh, 360px);
+          display: grid;
+          gap: 6px;
+          padding: 8px;
+          color: rgba(226, 232, 240, .82);
+          background: rgba(2, 6, 23, .38);
+          border: 1px solid rgba(125, 211, 252, .14);
+          pointer-events: auto;
+        }
+        #${PANEL_ID} .crgr-attack-head {
+          display: flex;
+          align-items: center;
+          justify-content: space-between;
+          gap: 8px;
+          color: rgba(186, 230, 253, .72);
+        }
+        #${PANEL_ID} .crgr-attack-head span {
+          color: #fecaca;
+          font-size: clamp(12px, .62vw, 18px);
+          font-weight: 700;
+          letter-spacing: .08em;
+        }
+        #${PANEL_ID} .crgr-attack-head small {
+          min-width: 0;
+          color: rgba(254, 249, 195, .82);
+          overflow: hidden;
+          text-overflow: ellipsis;
+          white-space: nowrap;
+        }
+        #${PANEL_ID} .crgr-attack-list {
+          display: grid;
+          gap: 4px;
+          max-height: min(30vh, 280px);
+          overflow: auto;
+        }
+        #${PANEL_ID} .crgr-attack-list button {
+          display: grid;
+          grid-template-columns: minmax(0, 1fr) minmax(46px, auto) minmax(48px, auto);
+          gap: 6px;
+          align-items: center;
+          min-height: 28px;
+          padding: 0 7px;
+          color: rgba(226, 232, 240, .86);
+          text-align: left;
+          background: rgba(15, 23, 42, .18);
+          border-color: rgba(125, 211, 252, .12);
+        }
+        #${PANEL_ID} .crgr-attack-list button.active {
+          color: #fff7ed;
+          background: rgba(127, 29, 29, .42);
+          border-color: rgba(248, 113, 113, .46);
+        }
+        #${PANEL_ID} .crgr-attack-name {
+          min-width: 0;
+          overflow: hidden;
+          text-overflow: ellipsis;
+          white-space: nowrap;
+        }
+        #${PANEL_ID} .crgr-attack-hp {
+          color: #fecaca;
+          text-align: right;
+          font-variant-numeric: tabular-nums;
+        }
+        #${PANEL_ID} .crgr-attack-dist {
+          color: rgba(186, 230, 253, .72);
+          text-align: right;
+          font-variant-numeric: tabular-nums;
         }
         #${PANEL_ID} .crgr-body {
           position: absolute;
@@ -448,7 +525,7 @@
         }
         #${PANEL_ID} .crgr-actions {
           display: grid;
-          grid-template-columns: repeat(4, 1fr);
+          grid-template-columns: repeat(5, 1fr);
           gap: 6px;
         }
         #${PANEL_ID} button {
@@ -585,6 +662,8 @@
       const ui = {
         huntQuery: root.querySelector('[data-crgr="hunt-query"]'),
         hunt: root.querySelector('[data-crgr="hunt"]'),
+        attackLockSummary: root.querySelector('[data-crgr="attack-lock-summary"]'),
+        attackList: root.querySelector('[data-crgr="attack-list"]'),
         lineCanvas: root.querySelector('[data-crgr="line-canvas"]'),
         dropRefresh: root.querySelector('[data-crgr="drop-refresh"]'),
         dropList: root.querySelector('[data-crgr="drop-list"]'),
@@ -655,6 +734,9 @@
         autoFireShots: 0,
         autoFireTarget: "",
         autoFireStatus: "OFF",
+        attackLockUserId: null,
+        attackLockName: "",
+        attackLockStatus: "AUTO",
         lastCombatDodge: { dx: 0, dy: 0, score: 0 },
         lastCombatSwitchAt: 0,
         combatManualOverride: false,
@@ -1173,6 +1255,63 @@
           });
       }
 
+      function renderAttackLockList(me) {
+        if (!ui.attackList || !ui.attackLockSummary) return;
+        const locked = me ? lockedAttackTarget(me) : null;
+        if (locked) {
+          const rangeText = locked.dist <= AUTO_FIRE_RANGE_CM ? "射程内" : "视野内";
+          ui.attackLockSummary.textContent = "LOCK " + (locked.displayName || runner.attackLockName)
+            + " / HP " + (Number.isFinite(locked.hpForFire) ? Math.round(locked.hpForFire) : "--")
+            + " / " + Math.round(locked.dist / 100) + "m"
+            + " / " + rangeText;
+        } else {
+          ui.attackLockSummary.textContent = "AUTO";
+        }
+
+        const enemies = me ? attackBufferEnemies(me) : [];
+        const fragment = document.createDocumentFragment();
+        if (!enemies.length) {
+          const empty = document.createElement("button");
+          empty.type = "button";
+          empty.disabled = true;
+          empty.textContent = "170m 内无敌人";
+          fragment.appendChild(empty);
+        } else {
+          enemies.forEach(enemy => {
+            const button = document.createElement("button");
+            const name = document.createElement("span");
+            const hp = document.createElement("span");
+            const dist = document.createElement("span");
+            const userId = Number(enemy.user_id);
+            button.type = "button";
+            button.dataset.userId = String(userId);
+            button.classList.toggle("active", runner.attackLockUserId !== null && Number(runner.attackLockUserId) === userId);
+            button.title = "点击锁定攻击对象";
+            name.className = "crgr-attack-name";
+            hp.className = "crgr-attack-hp";
+            dist.className = "crgr-attack-dist";
+            name.textContent = enemy.displayName || ("#" + userId);
+            hp.textContent = "HP " + (Number.isFinite(enemy.hpForFire) ? Math.round(enemy.hpForFire) : "--");
+            dist.textContent = Math.round(enemy.dist / 100) + "m";
+            button.appendChild(name);
+            button.appendChild(hp);
+            button.appendChild(dist);
+            fragment.appendChild(button);
+          });
+        }
+        ui.attackList.replaceChildren(fragment);
+      }
+
+      function handleAttackListClick(event) {
+        const button = event.target && event.target.closest ? event.target.closest("button[data-user-id]") : null;
+        if (!button || !ui.attackList || !ui.attackList.contains(button)) return;
+        const me = getMe();
+        if (!me) return;
+        const target = visibleAttackTargetById(me, Number(button.dataset.userId));
+        if (!target) return;
+        setAttackLock(target, "手动选择");
+      }
+
       function huntCandidateFromEntity(entity, me) {
         const userId = Number(entity && entity.user_id);
         const x = Number(entity && entity.x);
@@ -1319,6 +1458,76 @@
           }))
           .filter(entity => Number.isFinite(entity.dist) && entity.dist <= limitCm)
           .sort((a, b) => a.dist - b.dist);
+      }
+
+      function enemyHpForDisplay(enemy) {
+        return numberFrom(enemy, ["hp", "health", "life_value", "current_hp"], NaN);
+      }
+
+      function enemyDisplayName(enemy) {
+        const userId = Number(enemy && enemy.user_id);
+        return huntNameFromEntity(enemy, userId) || ("未知用户 #" + userId);
+      }
+
+      function decorateAttackEnemy(enemy) {
+        if (!enemy) return null;
+        return {
+          ...enemy,
+          displayName: enemyDisplayName(enemy),
+          hpForFire: enemyHpForDisplay(enemy)
+        };
+      }
+
+      function attackBufferEnemies(me) {
+        return liveEnemies(me, RICH_ENEMY_ESCAPE_CM)
+          .map(decorateAttackEnemy)
+          .filter(Boolean)
+          .sort((a, b) => a.dist - b.dist);
+      }
+
+      function visibleAttackTargetById(me, userId) {
+        const id = Number(userId);
+        if (!Number.isFinite(id)) return null;
+        const target = liveEnemies(me, ENEMY_LINE_SCAN_CM)
+          .find(enemy => Number(enemy.user_id) === id);
+        return decorateAttackEnemy(target);
+      }
+
+      function clearAttackLock(reason) {
+        if (runner.attackLockUserId === null) return;
+        const name = runner.attackLockName || ("#" + runner.attackLockUserId);
+        runner.attackLockUserId = null;
+        runner.attackLockName = "";
+        runner.attackLockStatus = "AUTO";
+        if (reason) push("攻击锁定已解除：" + name + " / " + reason);
+      }
+
+      function setAttackLock(enemy, reason) {
+        const target = decorateAttackEnemy(enemy);
+        const userId = Number(target && target.user_id);
+        if (!Number.isFinite(userId)) return;
+        runner.attackLockUserId = userId;
+        runner.attackLockName = target.displayName || ("#" + userId);
+        runner.attackLockStatus = "LOCK";
+        runner.autoFireTarget = runner.attackLockName;
+        push("攻击目标已锁定：" + runner.attackLockName + (reason ? " / " + reason : ""));
+        renderStatus();
+      }
+
+      function lockedAttackTarget(me) {
+        if (runner.attackLockUserId === null) return null;
+        const target = visibleAttackTargetById(me, runner.attackLockUserId);
+        if (!target) {
+          clearAttackLock("目标离开500m视野或已不存活");
+          return null;
+        }
+        runner.attackLockName = target.displayName || runner.attackLockName;
+        runner.attackLockStatus = target.dist <= AUTO_FIRE_RANGE_CM ? "LOCK" : "LOCK-OUT";
+        return {
+          ...target,
+          locked: true,
+          inFireRange: target.dist <= AUTO_FIRE_RANGE_CM
+        };
       }
 
       function richEnemies(me, limitCm) {
@@ -1679,11 +1888,10 @@
       }
 
       function autoFireTarget(me) {
+        const locked = lockedAttackTarget(me);
+        if (locked) return locked;
         return liveEnemies(me, AUTO_FIRE_RANGE_CM)
-          .map(enemy => ({
-            ...enemy,
-            hpForFire: numberFrom(enemy, ["hp", "health", "life_value", "current_hp"], NaN)
-          }))
+          .map(decorateAttackEnemy)
           .filter(enemy => Number.isFinite(enemy.hpForFire) && enemy.hpForFire > 0)
           .sort((a, b) => a.hpForFire - b.hpForFire || a.dist - b.dist || Number(a.user_id) - Number(b.user_id))[0] || null;
       }
@@ -1826,30 +2034,41 @@
           runner.autoFireStatus = "无目标";
           return false;
         }
+        const targetName = target.displayName || target.name || ("#" + target.user_id);
+        if (target.locked && !target.inFireRange) {
+          runner.autoFireTarget = targetName;
+          runner.autoFireStatus = "锁定超出射程 " + Math.round(target.dist / 100) + "m";
+          return false;
+        }
+        if (!Number.isFinite(target.hpForFire) || !(target.hpForFire > 0)) {
+          runner.autoFireTarget = targetName;
+          runner.autoFireStatus = "锁定目标HP未知";
+          return false;
+        }
         const cooldown = autoFireCooldownMs(me);
         if (!Number.isFinite(cooldown)) {
-          runner.autoFireTarget = target.name || ("#" + target.user_id);
+          runner.autoFireTarget = targetName;
           runner.autoFireStatus = "体力不足";
           return false;
         }
         const now = Date.now();
         const wait = Math.max(AUTO_FIRE_MAX_RATE_MS, cooldown);
         if (now - runner.autoFireLastAt < wait) {
-          runner.autoFireTarget = target.name || ("#" + target.user_id);
+          runner.autoFireTarget = targetName;
           runner.autoFireStatus = "冷却 " + Math.max(0, Math.ceil(wait - (now - runner.autoFireLastAt))) + "ms";
           return false;
         }
         const aim = predictedAutoFirePoint(me, target);
         const client = autoFireClientPoint(me, aim);
         if (!client) {
-          runner.autoFireTarget = target.name || ("#" + target.user_id);
+          runner.autoFireTarget = targetName;
           runner.autoFireStatus = "目标超出画面";
           return false;
         }
         dispatchAutoFireClick(client);
         runner.autoFireLastAt = now;
         runner.autoFireShots += 1;
-        runner.autoFireTarget = target.name || ("#" + target.user_id);
+        runner.autoFireTarget = targetName;
         runner.autoFireStatus = "射击 " + runner.autoFireTarget
           + " HP " + Math.round(target.hpForFire)
           + " / " + Math.round(target.dist / 100) + "m"
@@ -2593,6 +2812,7 @@
         runner.huntMode = false;
         runner.autoFireMode = false;
         runner.autoFireStatus = "OFF";
+        clearAttackLock("离开脱战");
         clearHuntTarget();
         clearCoinRoute();
         runner.combatRisk = "clear";
@@ -2933,6 +3153,7 @@
         runner.autoFireMode = false;
         runner.autoFireStatus = "OFF";
         runner.autoFireTarget = "";
+        clearAttackLock("停止脚本");
         runner.projectileMotion.clear();
         if (runner.timer) {
           clearInterval(runner.timer);
@@ -2990,6 +3211,9 @@
           autoFireStatus: runner.autoFireStatus,
           autoFireTarget: runner.autoFireTarget,
           autoFireShots: runner.autoFireShots,
+          attackLockUserId: runner.attackLockUserId,
+          attackLockName: runner.attackLockName,
+          attackLockStatus: runner.attackLockStatus,
           hp: me && me.hp,
           life: me && me.life,
           balance: me && me.external_balance_snapshot,
@@ -3020,6 +3244,7 @@
 
       function renderStatus() {
         const s = snapshot();
+        renderAttackLockList(getMe());
         root.classList.toggle("running", !!s.running);
         ui.mode.textContent = s.combatMode ? "COMBAT" : s.huntMode ? "HUNT" : (s.running ? "ACTIVE" : "STANDBY");
         ui.action.textContent = s.error ? ("ERROR: " + s.error) : (s.action || "等待指令");
@@ -3084,6 +3309,7 @@
       });
       ui.leave.addEventListener("click", () => clickLeave("manual"));
       ui.dropList.addEventListener("click", handleDropLeaderboardClick);
+      ui.attackList.addEventListener("click", handleAttackListClick);
       ui.collapse.addEventListener("click", () => {
         root.classList.toggle("collapsed");
         ui.collapse.textContent = root.classList.contains("collapsed") ? "SHOW" : "HUD";
