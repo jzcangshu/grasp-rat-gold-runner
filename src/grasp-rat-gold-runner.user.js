@@ -1,8 +1,8 @@
 // ==UserScript==
 // @name         Grasp Rat Gold Runner
 // @namespace    https://grasp-rat-game.h-e.top/
-// @version      1.6.12
-// @description  Auto collect coin drops with HP-drop teleport safety and stamina-fail leave fallback.
+// @version      1.6.13
+// @description  Auto collect coin drops with HP-drop leave safety and combat dodge support.
 // @match        https://grasp-rat-game.h-e.top/*
 // @run-at       document-end
 // @grant        unsafeWindow
@@ -32,7 +32,6 @@
 
     const RUNNER_KEY = "__codexRatGoldRunner";
     const PANEL_ID = "codex-rat-gold-runner-panel";
-    const DEFAULT_TELEPORT = "198183,758591";
     const RICH_ENEMY_MIN_DROP = 10;
     const RICH_ENEMY_SCAN_CM = 25000;
     const RICH_ENEMY_KEEP_CM = 22000;
@@ -41,6 +40,7 @@
     const ENEMY_LINE_MIN_DROP = 1;
     const COMBAT_SCAN_CM = 17000;
     const COMBAT_LOW_HP = 9;
+    const COMBAT_FAST_CHECK_HP = 22;
     const COMBAT_CRITICAL_HP = 25;
     const COMBAT_DODGE_SCAN_CM = 36000;
     const COMBAT_DODGE_SPEED_CMPS = 1300;
@@ -61,14 +61,14 @@
     const ROUTE_SWITCH_FACTOR = 1.14;
     const REPLAN_MS = 1800;
     const DROP_LEADERBOARD_REFRESH_MS = 30000;
+    const STEP_TICK_MS = 150;
+    const COMBAT_FAST_TICK_MS = 50;
     const AXIS_DOMINANCE_RATIO = 1.65;
     const HUNT_REACHED_CM = 260;
     const HUNT_LOST_MEMORY_MS = 12000;
     const HUNT_PREDICT_MIN_MS = 350;
     const HUNT_PREDICT_MAX_MS = 1300;
     const HUNT_PREDICT_DISTANCE_DIVISOR = 9000;
-    const TELEPORT_CONTEXT_GENERAL = "general";
-    const TELEPORT_CONTEXT_COMBAT_LOW_HP = "combat-low-hp";
     const DANGER_ID = "codex-rat-danger-vignette";
     const MANUAL_TARGET_REACHED_CM = 160;
     const MOVE_KEYS = ["w", "a", "s", "d", "arrowup", "arrowdown", "arrowleft", "arrowright"];
@@ -141,10 +141,9 @@
         '    </div>',
         '    <div class="crgr-line"><span>THREAT</span><b data-crgr="threat">--</b></div>',
         '    <div class="crgr-line"><span>STAMINA</span><b data-crgr="stamina">--</b></div>',
-        '    <div class="crgr-line"><span>SAFETY</span><b data-crgr="safety">TP 0 / LEAVE 0 / EVADE 0</b></div>',
+        '    <div class="crgr-line"><span>SAFETY</span><b data-crgr="safety">LEAVE 0 / EVADE 0</b></div>',
         '  </div>',
         '  <div class="crgr-body">',
-        '    <label>传送坐标 <input data-crgr="teleport" value="' + DEFAULT_TELEPORT + '" /></label>',
         '    <div class="crgr-hunt-row">',
         '      <label>追杀用户名 <input data-crgr="hunt-query" placeholder="用户名片段" /></label>',
         '      <button type="button" data-crgr="hunt">追杀</button>',
@@ -563,7 +562,6 @@
       document.body.appendChild(danger);
 
       const ui = {
-        teleport: root.querySelector('[data-crgr="teleport"]'),
         huntQuery: root.querySelector('[data-crgr="hunt-query"]'),
         hunt: root.querySelector('[data-crgr="hunt"]'),
         lineCanvas: root.querySelector('[data-crgr="line-canvas"]'),
@@ -605,7 +603,7 @@
         lineRaf: 0,
         lineCtx: ui.lineCanvas ? ui.lineCanvas.getContext("2d") : null,
         lineDpr: 1,
-        tickMs: 150,
+        tickMs: STEP_TICK_MS,
         startedAt: 0,
         targetId: null,
         targetScore: 0,
@@ -637,19 +635,12 @@
         lastHp: null,
         lastBalance: null,
         deltaBalance: 0,
-        teleports: 0,
         leaves: 0,
         avoidances: 0,
-        staminaFailSeen: false,
         hourlyLimitLeaveTriggered: false,
-        teleportCheckUntil: 0,
-        teleportCheckContext: TELEPORT_CONTEXT_GENERAL,
-        teleportChatBaseline: "",
-        lastTeleportAt: 0,
         lastThreat: null,
         enemyMotion: new Map(),
         projectileMotion: new Map(),
-        pausedUntil: 0,
         lastAction: "ready",
         lastError: "",
         log: [],
@@ -2250,42 +2241,6 @@
         }
       }
 
-      function chatText() {
-        const roots = [];
-        if (els.chatLog) roots.push(els.chatLog);
-        if (els.mobileChatLog) roots.push(els.mobileChatLog);
-        for (const node of document.querySelectorAll("[id], [class]")) {
-          const key = ((node.id || "") + " " + (node.className || "")).toLowerCase();
-          if (key.includes("chat") || key.includes("log")) roots.push(node);
-        }
-        const text = roots
-          .filter(Boolean)
-          .map(node => node.innerText || node.textContent || "")
-          .join("\n");
-        return text || document.body.innerText || "";
-      }
-
-      function chatDeltaSinceTeleport() {
-        const current = chatText();
-        const baseline = runner.teleportChatBaseline || "";
-        if (!baseline) return current;
-        if (current.startsWith(baseline)) return current.slice(baseline.length);
-        const oldLines = new Set(baseline.split("\n").map(line => line.trim()).filter(Boolean));
-        return current
-          .split("\n")
-          .map(line => line.trim())
-          .filter(line => line && !oldLines.has(line))
-          .join("\n");
-      }
-
-      function hasTeleportStaminaFail() {
-        const text = chatDeltaSinceTeleport();
-        return text.includes("体力不足")
-          || text.includes("体力不够")
-          || text.toLowerCase().includes("stamina insufficient")
-          || text.toLowerCase().includes("insufficient stamina");
-      }
-
       function leftSidebarText() {
         const side = document.querySelector(".side");
         if (!side) return "";
@@ -2317,17 +2272,17 @@
         clearHuntTarget();
         clearCoinRoute();
         runner.combatRisk = "clear";
-        runner.staminaFailSeen = true;
         if (runner.timer) {
           clearInterval(runner.timer);
           runner.timer = 0;
         }
+        runner.tickMs = STEP_TICK_MS;
         try {
           const button = els.leaveBtn
             || Array.from(document.querySelectorAll("button")).find(btn => (btn.textContent || "").trim() === "离开");
           if (!button) throw new Error("leave button not found");
           button.click();
-          push("体力不足，已点击离开：" + reason);
+          push("已点击离开脱战：" + reason);
         } catch (err) {
           runner.lastError = String(err && err.message || err);
           push("离开失败：" + runner.lastError);
@@ -2335,32 +2290,13 @@
         renderStatus();
       }
 
-      function teleport(reason, force, context) {
-        if (runner.staminaFailSeen && !force) {
-          clickLeave("已确认体力不足，不再尝试传送");
-          return;
-        }
-        if (!force && Date.now() - runner.lastTeleportAt < 2500) return;
-        stopMove();
-        setDanger(false);
-        clearCoinRoute();
-        runner.teleports += 1;
-        runner.lastTeleportAt = Date.now();
-        runner.teleportCheckUntil = Date.now() + 3000;
-        runner.teleportCheckContext = context || TELEPORT_CONTEXT_GENERAL;
-        runner.teleportChatBaseline = chatText();
-        runner.pausedUntil = Date.now() + 9000;
-        try {
-          const target = (ui.teleport.value || DEFAULT_TELEPORT).trim() || DEFAULT_TELEPORT;
-          els.teleportInput.value = target;
-          els.teleportInput.dispatchEvent(new Event("input", { bubbles: true }));
-          els.teleportInput.dispatchEvent(new Event("change", { bubbles: true }));
-          els.teleportBtn.click();
-          push("已尝试传送到 " + target + "：" + reason);
-        } catch (err) {
-          runner.lastError = String(err && err.message || err);
-          push("传送失败：" + runner.lastError);
-        }
+      function setStepInterval(ms) {
+        const next = Number(ms) || STEP_TICK_MS;
+        if (runner.tickMs === next && runner.timer) return;
+        runner.tickMs = next;
+        if (!runner.running || !runner.timer) return;
+        clearInterval(runner.timer);
+        runner.timer = window.setInterval(step, runner.tickMs);
       }
 
       function setCombatMode(active, reason) {
@@ -2386,6 +2322,7 @@
           if (!runner.running) start();
         } else {
           runner.projectileMotion.clear();
+          setStepInterval(STEP_TICK_MS);
           stopMove();
           setDanger(false);
           push("临时交战已关闭，恢复金币巡航" + (reason ? "：" + reason : ""));
@@ -2433,6 +2370,7 @@
 
       function handleCombatMode(me, hp) {
         if (!runner.combatMode) return false;
+        setStepInterval(hp < COMBAT_FAST_CHECK_HP ? COMBAT_FAST_TICK_MS : STEP_TICK_MS);
         clearCoinRoute();
         runner.planNextAt = 0;
         runner.navTarget = null;
@@ -2442,13 +2380,8 @@
 
         if (hp <= COMBAT_LOW_HP) {
           runner.combatRisk = "critical";
-          runner.lastAction = "临时交战：血量 " + hp + "，立即传送脱战";
           setDanger(true, "critical");
-          if (runner.staminaFailSeen) {
-            clickLeave("临时交战低血量且已确认体力不足");
-          } else {
-            teleport("临时交战血量≤" + COMBAT_LOW_HP + "：" + hp, true, TELEPORT_CONTEXT_COMBAT_LOW_HP);
-          }
+          clickLeave("临时交战血量≤" + COMBAT_LOW_HP + "：" + hp);
           return true;
         }
 
@@ -2501,30 +2434,9 @@
           }
           runner.lastBalance = balance;
 
-          if (runner.teleportCheckUntil) {
-            if (hasTeleportStaminaFail()) {
-              runner.teleportCheckUntil = 0;
-              if (runner.combatMode && runner.teleportCheckContext !== TELEPORT_CONTEXT_COMBAT_LOW_HP) {
-                runner.staminaFailSeen = true;
-                runner.teleportChatBaseline = "";
-                runner.teleportCheckContext = TELEPORT_CONTEXT_GENERAL;
-                runner.lastAction = "临时交战：检测到体力不足，等待低血量脱战";
-              } else {
-                runner.teleportCheckContext = TELEPORT_CONTEXT_GENERAL;
-                clickLeave("传送提示体力不足");
-              }
-              return;
-            }
-            if (Date.now() >= runner.teleportCheckUntil) {
-              runner.teleportCheckUntil = 0;
-              runner.teleportCheckContext = TELEPORT_CONTEXT_GENERAL;
-              runner.teleportChatBaseline = "";
-            }
-          }
-
           if (hp < runner.lastHp && !runner.combatMode) {
             setDanger(false);
-            teleport("血量下降 " + runner.lastHp + " -> " + hp, false, TELEPORT_CONTEXT_GENERAL);
+            clickLeave("常态血量下降 " + runner.lastHp + " -> " + hp);
             runner.lastHp = hp;
             return;
           }
@@ -2534,12 +2446,6 @@
             stopMove();
             setDanger(false);
             runner.lastAction = "非存活状态，停止移动";
-            return;
-          }
-
-          if (Date.now() < runner.pausedUntil) {
-            stopMove();
-            setDanger(false);
             return;
           }
 
@@ -2634,14 +2540,10 @@
         runner.startedAt = Date.now();
         runner.lastHp = me ? Number(me.hp || 0) : null;
         runner.lastBalance = me ? Number(me.external_balance_snapshot || 0) : null;
-        runner.staminaFailSeen = false;
         runner.hourlyLimitLeaveTriggered = false;
-        runner.teleportCheckUntil = 0;
-        runner.teleportCheckContext = TELEPORT_CONTEXT_GENERAL;
-        runner.teleportChatBaseline = "";
         clearCoinRoute();
         runner.planNextAt = 0;
-        runner.pausedUntil = 0;
+        runner.tickMs = STEP_TICK_MS;
         runner.timer = window.setInterval(step, runner.tickMs);
         push("已启动");
         step();
@@ -2662,6 +2564,7 @@
           clearInterval(runner.timer);
           runner.timer = 0;
         }
+        runner.tickMs = STEP_TICK_MS;
         stopMove();
         setDanger(false);
         push("已停止" + (reason ? "：" + reason : ""));
@@ -2714,7 +2617,6 @@
           balance: me && me.external_balance_snapshot,
           value: me && me.coin_value_snapshot,
           delta: runner.deltaBalance,
-          teleports: runner.teleports,
           leaves: runner.leaves,
           avoidances: runner.avoidances,
           target: huntLabel || (manual ? (manual.x + "," + manual.y) : runner.targetId),
@@ -2753,7 +2655,7 @@
           ? (s.threat.name + " / " + s.threat.dist + "cm / Drop " + s.threat.drop)
           : "clear";
         ui.stamina.textContent = "5s " + (s.stamina5s ?? "--") + " / 1h " + (s.stamina1h ?? "--");
-        ui.safety.textContent = "TP " + s.teleports + " / LEAVE " + s.leaves + " / EVADE " + s.avoidances;
+        ui.safety.textContent = "LEAVE " + s.leaves + " / EVADE " + s.avoidances;
         ui.status.textContent = s.combatMode
           ? ("COMBAT / " + (s.combatManualOverride ? "MANUAL / " : "") + "BULLETS " + s.combatProjectiles + " / TARGETS " + s.combatTargets)
           : s.huntMode
@@ -2772,7 +2674,6 @@
       runner.start = start;
       runner.stop = stop;
       runner.destroy = destroy;
-      runner.teleport = reason => teleport(reason || "manual", true);
       runner.leave = reason => clickLeave(reason || "manual");
       runner.setCombatMode = setCombatMode;
       runner.setHuntMode = setHuntMode;
