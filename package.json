@@ -1,0 +1,11 @@
+{
+  "name": "grasp-rat-gold-runner",
+  "version": "1.6.7",
+  "private": true,
+  "description": "Tampermonkey userscript for Grasp Rat Game coin collection and safety automation.",
+  "scripts": {
+    "check": "node --check src/grasp-rat-gold-runner.user.js && node --check dist/grasp-rat-gold-runner.user.js",
+    "sync:dist": "powershell -NoProfile -ExecutionPolicy Bypass -File scripts/sync-dist.ps1",
+    "release:check": "powershell -NoProfile -ExecutionPolicy Bypass -File scripts/release-check.ps1"
+  }
+}
