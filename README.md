@@ -17,7 +17,9 @@
 
 搭配 Tampermonkey（篡改猴）使用：`https://www.tampermonkey.net/`
 
-安装脚本位于[dist/grasp-rat-gold-runner.user.js](https://github.com/jzcangshu/grasp-rat-gold-runner/blob/main/dist/grasp-rat-gold-runner.user.js)。
+PC 版脚本位于[dist/grasp-rat-gold-runner.user.js](https://github.com/jzcangshu/grasp-rat-gold-runner/blob/main/dist/grasp-rat-gold-runner.user.js)。
+
+手机端脚本位于[dist/grasp-rat-gold-runner-mobile.user.js](https://github.com/jzcangshu/grasp-rat-gold-runner/blob/main/dist/grasp-rat-gold-runner-mobile.user.js)。
 
 ------
 
@@ -81,6 +83,7 @@
 #### 一键前往（右键选点）
 
 - 你可以在游戏画布上右键单击，设置一个临时前往坐标（类似LOL）。右键目标优先于金币巡航，但低于受伤离开、死亡停止、体力检查和必要的安全规避。
+- 手机端改为长按选点，并在右上角提供“取消目标”按钮。
 
 ## 连线指示器
 
@@ -97,11 +100,14 @@
 ```text
 grasp-rat-gold-runner/
   src/
-    grasp-rat-gold-runner.user.js   # 源码，开发改这里
+    grasp-rat-gold-runner.user.js          # PC 版源码
+    grasp-rat-gold-runner-mobile.user.js   # 手机端独立源码
   dist/
-    grasp-rat-gold-runner.user.js   # 发布版，安装到篡改猴用这里
+    grasp-rat-gold-runner.user.js          # PC 版发布脚本
+    grasp-rat-gold-runner-mobile.user.js   # 手机端发布脚本
   docs/
     behavior.md                     # 详细行为规则和优先级
+    mobile.md                       # 手机端取舍和交互说明
     install.md                      # 安装说明
     development.md                  # 开发与发布流程
     changelog.md                    # 版本记录
@@ -113,7 +119,7 @@ grasp-rat-gold-runner/
 
 ## 开发
 
-改功能时优先改 `src/grasp-rat-gold-runner.user.js`。发布前同步到 `dist`：
+PC 功能改 `src/grasp-rat-gold-runner.user.js`；手机端功能改 `src/grasp-rat-gold-runner-mobile.user.js`。发布前同步到 `dist`：
 
 ```powershell
 powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\sync-dist.ps1
@@ -124,6 +130,8 @@ powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\sync-dist.ps1
 ```powershell
 node --check .\src\grasp-rat-gold-runner.user.js
 node --check .\dist\grasp-rat-gold-runner.user.js
+node --check .\src\grasp-rat-gold-runner-mobile.user.js
+node --check .\dist\grasp-rat-gold-runner-mobile.user.js
 ```
 
 完整发布检查：
@@ -136,6 +144,7 @@ powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\release-check.ps1
 
 这个项目最容易踩坑的地方不是语法，而是各个自动化层的优先级：
 
+- PC 与手机端是两个独立 userscript，不要为了适配手机去改桌面 HUD。
 - 生命安全高于移动目标。
 - 临时交战高于金币巡航。
 - 自动攻击是独立火控层，不应该改变移动分支。

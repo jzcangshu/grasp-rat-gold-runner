@@ -1,5 +1,13 @@
 # Changelog
 
+## 1.7.0
+
+- 新增独立手机端 userscript：`src/grasp-rat-gold-runner-mobile.user.js` 和 `dist/grasp-rat-gold-runner-mobile.user.js`。
+- 手机端改为长按游戏画布设置手动坐标目标，并在右上角显示取消目标按钮。
+- 手机端移除桌面版纯展示数据框和蓝色全屏 HUD 风格层，保留底部四按钮、火控侧边抽屉和追杀侧边抽屉。
+- 手机端追杀列表点击用户名只填入追杀输入框，避免小屏误触后直接开始追杀。
+- 发布脚本和 release check 已扩展为同时检查 PC 与 mobile 两套 userscript。
+
 ## 1.6.18
 
 - 自动攻击开关移动到左上角 `ATTACK BUFFER` 上方，左下角操作区不再显示该按钮；停止和离开会自动关闭。

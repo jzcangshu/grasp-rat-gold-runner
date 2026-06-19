@@ -1,10 +1,10 @@
 {
   "name": "grasp-rat-gold-runner",
-  "version": "1.6.18",
+  "version": "1.7.0",
   "private": true,
-  "description": "Tampermonkey userscript for Grasp Rat Game coin collection and safety automation.",
+  "description": "Tampermonkey userscripts for Grasp Rat Game desktop and mobile coin collection automation.",
   "scripts": {
-    "check": "node --check src/grasp-rat-gold-runner.user.js && node --check dist/grasp-rat-gold-runner.user.js",
+    "check": "node --check src/grasp-rat-gold-runner.user.js && node --check dist/grasp-rat-gold-runner.user.js && node --check src/grasp-rat-gold-runner-mobile.user.js && node --check dist/grasp-rat-gold-runner-mobile.user.js",
     "sync:dist": "powershell -NoProfile -ExecutionPolicy Bypass -File scripts/sync-dist.ps1",
     "release:check": "powershell -NoProfile -ExecutionPolicy Bypass -File scripts/release-check.ps1"
   }

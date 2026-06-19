@@ -4,14 +4,14 @@
 
 1. 打开 Chrome 的篡改猴管理面板。
 2. 新建脚本。
-3. 粘贴 `dist/grasp-rat-gold-runner.user.js` 的完整内容。
+3. PC 版粘贴 `dist/grasp-rat-gold-runner.user.js`；手机端粘贴 `dist/grasp-rat-gold-runner-mobile.user.js`。
 4. 保存。
 5. 打开或刷新 `https://grasp-rat-game.h-e.top/`。
 
 ## 更新现有脚本
 
 1. 打开篡改猴里的 `Grasp Rat Gold Runner`。
-2. 用 `dist/grasp-rat-gold-runner.user.js` 覆盖原内容。
+2. PC 版用 `dist/grasp-rat-gold-runner.user.js` 覆盖；手机端用 `dist/grasp-rat-gold-runner-mobile.user.js` 覆盖。
 3. 保存。
 4. 刷新游戏页面。
 

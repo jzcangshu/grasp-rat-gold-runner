@@ -11,8 +11,10 @@
 
 ## 项目入口
 
-- 主要编辑文件：`src/grasp-rat-gold-runner.user.js`
-- 发布文件：`dist/grasp-rat-gold-runner.user.js`
+- PC 版主要编辑文件：`src/grasp-rat-gold-runner.user.js`
+- PC 版发布文件：`dist/grasp-rat-gold-runner.user.js`
+- 手机端独立源码：`src/grasp-rat-gold-runner-mobile.user.js`
+- 手机端发布文件：`dist/grasp-rat-gold-runner-mobile.user.js`
 - 改完源码后必须同步到 `dist`。
 - 不要继续改旧会话目录里的脚本，旧目录只作为历史备份。
 
@@ -48,7 +50,7 @@
 
 `1h体力限制` 自动离开只读取左侧官方 `.side` 面板文本，不读取聊天区，避免历史消息误触发。这个监控应独立于主循环定时生效。
 
-右键手动坐标目标不能覆盖安全逻辑。常态受伤离开、体力、死亡、170m 规避都必须优先于右键目标。
+PC 版右键手动坐标目标、手机端长按手动坐标目标都不能覆盖安全逻辑。常态受伤离开、体力、死亡、170m 规避都必须优先于手动目标。
 
 临时交战模式开启后会覆盖常态受伤离开，允许受伤继续交战；但不能覆盖死亡停止和 HP 不超过 9 的低血量离开。它替代金币巡航和富敌巡航规避等普通移动分支；右键目标在临时交战内仍可使用，并且优先于自动躲避/远离危险敌人。
 
@@ -77,6 +79,10 @@
 
 ## UI/HUD 规则
 
+- 手机端是独立 userscript，不要把手机端长按选点、侧边抽屉、紧凑按钮栏塞回 PC 脚本。
+- 手机端删除桌面版正下方、左上角、右上角的纯展示数据框；保留底部四按钮、右上角取消手动目标、火控/追杀侧边抽屉。
+- 手机端追杀列表点击用户名只填入追杀输入框，不自动开启追杀。
+- 手机端不能恢复桌面版蓝色全屏 HUD 风格层。
 - HUD 必须避开游戏左侧官方 `.side` 面板。
 - HUD 左边界由 `.side.getBoundingClientRect().right + 28px` 动态计算。
 - 不要用固定 `50vw` 这种粗暴边界。
@@ -120,6 +126,8 @@
 ```powershell
 node --check .\src\grasp-rat-gold-runner.user.js
 node --check .\dist\grasp-rat-gold-runner.user.js
+node --check .\src\grasp-rat-gold-runner-mobile.user.js
+node --check .\dist\grasp-rat-gold-runner-mobile.user.js
 ```
 
 如改 HUD，建议在游戏页临时注入验证布局：
@@ -131,8 +139,8 @@ node --check .\dist\grasp-rat-gold-runner.user.js
 
 ## 发布流程
 
-1. 改 `src/grasp-rat-gold-runner.user.js`。
-2. 更新 userscript 头部 `@version`。
-3. 同步到 `dist/grasp-rat-gold-runner.user.js`。
-4. 跑语法检查。
+1. 按目标平台改 `src/grasp-rat-gold-runner.user.js` 或 `src/grasp-rat-gold-runner-mobile.user.js`。
+2. 更新对应 userscript 头部 `@version`。
+3. 运行 `scripts\sync-dist.ps1` 同步到 `dist`。
+4. 跑语法检查和 release check。
 5. 在 `docs/changelog.md` 写一条变更。

@@ -40,6 +40,8 @@ git push
 
 ## 发布文件
 
-- `src/grasp-rat-gold-runner.user.js` 是开发源文件。
-- `dist/grasp-rat-gold-runner.user.js` 是给篡改猴安装的发布文件。
-- 发布前两者必须完全一致。
+- `src/grasp-rat-gold-runner.user.js` 是 PC 版开发源文件。
+- `src/grasp-rat-gold-runner-mobile.user.js` 是手机端独立开发源文件。
+- `dist/grasp-rat-gold-runner.user.js` 是 PC 版发布文件。
+- `dist/grasp-rat-gold-runner-mobile.user.js` 是手机端发布文件。
+- 发布前每个源码都必须与对应 dist 文件完全一致。
