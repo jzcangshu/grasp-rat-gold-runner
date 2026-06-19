@@ -1,5 +1,11 @@
 # Changelog
 
+## 1.7.1
+
+- 手机端四个主按钮从底部移动到顶部。
+- 手机端火控和追杀菜单改为顶部按钮下方的扁平浮窗，减少遮挡。
+- 手机端追杀列表改为全场 Drop Top 5，显示用户名、Drop 数和距离，点击用户名只填入追杀输入框。
+
 ## 1.7.0
 
 - 新增独立手机端 userscript：`src/grasp-rat-gold-runner-mobile.user.js` 和 `dist/grasp-rat-gold-runner-mobile.user.js`。

@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Grasp Rat Gold Runner Mobile
 // @namespace    https://grasp-rat-game.h-e.top/
-// @version      0.1.0
+// @version      0.1.1
 // @description  Mobile-focused Grasp Rat helper with long-press target, compact controls, hunt drawer, and fire lock drawer.
 // @match        https://grasp-rat-game.h-e.top/*
 // @run-at       document-end
@@ -218,16 +218,16 @@
         }
         #${PANEL_ID} .crgr-edge-toggle {
           position: fixed;
-          top: 42%;
-          z-index: 3;
-          width: 34px;
-          min-height: 72px;
-          padding: 6px 4px;
+          top: calc(54px + env(safe-area-inset-top));
+          z-index: 7;
+          width: 48px;
+          min-height: 30px;
+          padding: 0 6px;
           color: #f8fafc;
           background: rgba(8, 13, 24, .76);
           border-color: rgba(250, 204, 21, .32);
-          writing-mode: vertical-rl;
-          letter-spacing: 2px;
+          font-size: 11px;
+          letter-spacing: 0;
         }
         #${PANEL_ID} .crgr-edge-attack { left: max(6px, env(safe-area-inset-left)); }
         #${PANEL_ID} .crgr-edge-hunt { right: max(6px, env(safe-area-inset-right)); }
@@ -239,45 +239,52 @@
         #${PANEL_ID} .crgr-cancel-manual {
           display: none;
           position: fixed;
-          top: max(8px, env(safe-area-inset-top));
-          right: max(8px, env(safe-area-inset-right));
-          z-index: 4;
-          min-height: 34px;
-          padding: 0 10px;
+          top: calc(54px + env(safe-area-inset-top));
+          right: calc(64px + env(safe-area-inset-right));
+          z-index: 8;
+          min-height: 30px;
+          padding: 0 8px;
           color: #fef3c7;
           background: rgba(113, 63, 18, .86);
           border-color: rgba(250, 204, 21, .54);
+          font-size: 11px;
         }
         #${PANEL_ID}.manual-target .crgr-cancel-manual { display: block; }
         #${PANEL_ID} .crgr-drawer {
           position: fixed;
-          top: max(8px, env(safe-area-inset-top));
-          bottom: calc(58px + env(safe-area-inset-bottom));
+          top: calc(90px + env(safe-area-inset-top));
+          left: max(8px, env(safe-area-inset-left));
+          right: max(8px, env(safe-area-inset-right));
           z-index: 5;
-          width: min(82vw, 292px);
+          width: auto;
+          max-height: min(38vh, 260px);
           display: grid;
           align-content: start;
-          gap: 8px;
-          padding: 10px;
+          gap: 6px;
+          padding: 8px;
           color: rgba(241, 245, 249, .92);
-          background: rgba(8, 13, 24, .86);
+          background: rgba(8, 13, 24, .82);
           border: 1px solid rgba(226, 232, 240, .16);
-          box-shadow: 0 12px 32px rgba(0, 0, 0, .34);
+          border-radius: 7px;
+          box-shadow: 0 10px 22px rgba(0, 0, 0, .28);
           pointer-events: auto;
           overflow: auto;
-          transition: transform .18s ease;
+          opacity: 0;
+          visibility: hidden;
+          transform: translateY(-8px);
+          transition: transform .16s ease, opacity .16s ease, visibility .16s ease;
         }
         #${PANEL_ID} .crgr-attack-lock {
-          left: max(6px, env(safe-area-inset-left));
-          transform: translateX(calc(-100% - 12px));
+          max-width: 360px;
         }
         #${PANEL_ID} .crgr-hunt-drawer {
-          right: max(6px, env(safe-area-inset-right));
-          transform: translateX(calc(100% + 12px));
+          max-width: 390px;
         }
         #${PANEL_ID}.attack-open .crgr-attack-lock,
         #${PANEL_ID}.hunt-open .crgr-hunt-drawer {
-          transform: translateX(0);
+          opacity: 1;
+          visibility: visible;
+          transform: translateY(0);
         }
         #${PANEL_ID} .crgr-drawer-head,
         #${PANEL_ID} .crgr-attack-head,
@@ -292,11 +299,12 @@
           font-size: 13px;
         }
         #${PANEL_ID} .crgr-drawer-head button {
-          min-height: 28px;
-          padding: 0 8px;
+          min-height: 26px;
+          padding: 0 7px;
           color: #cbd5e1;
         }
         #${PANEL_ID} .crgr-auto-attack {
+          min-height: 30px;
           color: #bae6fd;
           border-color: rgba(56, 189, 248, .42);
         }
@@ -321,17 +329,17 @@
         #${PANEL_ID} .crgr-attack-list,
         #${PANEL_ID} .crgr-hunt-list {
           display: grid;
-          gap: 5px;
+          gap: 4px;
           margin: 0;
           padding: 0;
           list-style: none;
         }
         #${PANEL_ID} .crgr-attack-list button,
         #${PANEL_ID} .crgr-hunt-list li {
-          min-height: 34px;
+          min-height: 30px;
           background: rgba(15, 23, 42, .52);
           border: 1px solid rgba(226, 232, 240, .12);
-          border-radius: 6px;
+          border-radius: 5px;
         }
         #${PANEL_ID} .crgr-attack-list button {
           display: grid;
@@ -367,12 +375,17 @@
         #${PANEL_ID} .crgr-hunt-row {
           display: grid;
           grid-template-columns: minmax(0, 1fr) 68px;
-          gap: 6px;
+          gap: 5px;
+        }
+        #${PANEL_ID} .crgr-hunt-row input,
+        #${PANEL_ID} .crgr-hunt-row button {
+          height: 30px;
+          min-height: 30px;
         }
         #${PANEL_ID} .crgr-hunt-list li {
           display: grid;
-          grid-template-columns: minmax(0, 1fr) minmax(54px, auto);
-          gap: 6px;
+          grid-template-columns: minmax(0, 1fr) minmax(50px, auto) minmax(48px, auto);
+          gap: 5px;
           align-items: center;
           padding: 0 7px;
         }
@@ -389,6 +402,12 @@
           border-color: transparent;
         }
         #${PANEL_ID} .crgr-drop-value {
+          color: #fde68a;
+          text-align: right;
+          font-weight: 700;
+          font-variant-numeric: tabular-nums;
+        }
+        #${PANEL_ID} .crgr-drop-dist {
           color: rgba(186, 230, 253, .78);
           text-align: right;
           font-variant-numeric: tabular-nums;
@@ -397,7 +416,7 @@
           position: fixed;
           left: max(8px, env(safe-area-inset-left));
           right: max(8px, env(safe-area-inset-right));
-          bottom: max(8px, env(safe-area-inset-bottom));
+          top: max(8px, env(safe-area-inset-top));
           z-index: 6;
           display: grid;
           grid-template-columns: repeat(4, minmax(0, 1fr));
@@ -405,7 +424,7 @@
           pointer-events: auto;
         }
         #${PANEL_ID} .crgr-actions button {
-          min-height: 42px;
+          min-height: 38px;
           padding: 0 4px;
           font-size: 12px;
           font-weight: 700;
@@ -1071,33 +1090,63 @@
         });
       }
 
+      function leaderboardPointForUser(userId) {
+        const id = Number(userId);
+        if (!Number.isFinite(id)) return null;
+        const entity = (state.entities || []).find(item => Number(item && item.user_id) === id);
+        if (entity && Number.isFinite(Number(entity.x)) && Number.isFinite(Number(entity.y))) {
+          return {
+            x: Number(entity.x),
+            y: Number(entity.y)
+          };
+        }
+        const minimapPoints = state.minimap && Array.isArray(state.minimap.points) ? state.minimap.points : [];
+        const point = minimapPoints.find(item => Number(item && (item.u ?? item.user_id)) === id);
+        if (point && Number.isFinite(Number(point.x)) && Number.isFinite(Number(point.y))) {
+          return {
+            x: Number(point.x),
+            y: Number(point.y)
+          };
+        }
+        return null;
+      }
+
+      function formatLeaderboardDistance(me, row) {
+        const point = leaderboardPointForUser(row && row.userId);
+        const mx = Number(me && me.x);
+        const my = Number(me && me.y);
+        if (!point || !Number.isFinite(mx) || !Number.isFinite(my)) return "--";
+        return Math.round(Math.hypot(point.x - mx, point.y - my) / 100) + "m";
+      }
+
       function renderDropLeaderboard() {
         if (!ui.dropList || !ui.dropRefresh) return;
         const me = getMe();
-        const rows = me
-          ? huntCandidates(me)
-            .sort((a, b) => a.dist - b.dist || String(a.name).localeCompare(String(b.name)))
-            .slice(0, 16)
-          : [];
+        const rows = topDropUsers();
         const fragment = document.createDocumentFragment();
         if (!rows.length) {
           const item = document.createElement("li");
-          item.textContent = "暂无可追踪用户名";
+          item.textContent = "暂无 Drop 数据";
           fragment.appendChild(item);
         } else {
           rows.forEach(row => {
             const item = document.createElement("li");
             const name = document.createElement("button");
-            const value = document.createElement("span");
+            const drop = document.createElement("span");
+            const dist = document.createElement("span");
             name.type = "button";
             name.className = "crgr-drop-name crgr-hunt-name";
             name.textContent = row.name;
-            name.title = "点击填入追杀用户名";
-            name.dataset.copyName = row.name;
-            value.className = "crgr-drop-value crgr-hunt-meta";
-            value.textContent = Math.round(row.dist / 100) + "m";
+            name.title = row.copyName ? "点击填入追杀用户名" : "未识别到真实用户名";
+            if (row.copyName) name.dataset.copyName = row.copyName;
+            else name.disabled = true;
+            drop.className = "crgr-drop-value";
+            drop.textContent = String(Math.round(row.drop));
+            dist.className = "crgr-drop-dist crgr-hunt-meta";
+            dist.textContent = formatLeaderboardDistance(me, row);
             item.appendChild(name);
-            item.appendChild(value);
+            item.appendChild(drop);
+            item.appendChild(dist);
             fragment.appendChild(item);
           });
         }
@@ -3288,4 +3337,3 @@
     }
   }
 })();
-
