@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Grasp Rat Gold Runner
 // @namespace    https://grasp-rat-game.h-e.top/
-// @version      1.6.18
+// @version      1.7.2
 // @description  Auto collect coin drops with HP-drop leave safety and combat dodge support.
 // @match        https://grasp-rat-game.h-e.top/*
 // @run-at       document-end
@@ -77,7 +77,8 @@
     const ROUTE_MAX_POINTS_SPARSE = 2;
     const ROUTE_SWITCH_FACTOR = 1.14;
     const REPLAN_MS = 1800;
-    const DROP_LEADERBOARD_REFRESH_MS = 30000;
+    const DROP_LEADERBOARD_REFRESH_MS = 10000;
+    const DROP_LEADERBOARD_ENTRY_REFRESH_DELAY_MS = 3000;
     const STEP_TICK_MS = 150;
     const COMBAT_FAST_TICK_MS = 50;
     const AXIS_DOMINANCE_RATIO = 1.65;
@@ -711,6 +712,8 @@
         statusTimer: 0,
         sidebarSafetyTimer: 0,
         dropLeaderboardTimer: 0,
+        dropLeaderboardEntryTimer: 0,
+        dropLeaderboardEntryRefreshScheduled: false,
         lineRaf: 0,
         lineCtx: ui.lineCanvas ? ui.lineCanvas.getContext("2d") : null,
         lineDpr: 1,
@@ -1238,7 +1241,7 @@
             name.type = "button";
             name.className = "crgr-drop-name";
             name.textContent = row.name;
-            name.title = row.copyName ? "点击复制用户名" : "未识别到真实用户名";
+            name.title = row.copyName ? "点击复制并填入追杀用户名" : "未识别到真实用户名";
             if (row.copyName) name.dataset.copyName = row.copyName;
             else name.disabled = true;
             value.className = "crgr-drop-value";
@@ -1253,20 +1256,46 @@
         ui.dropRefresh.textContent = "刷新 " + formatClock(Date.now());
       }
 
+      function fillHuntQueryFromLeaderboard(name) {
+        const value = String(name || "").trim();
+        if (!value || !ui.huntQuery) return false;
+        ui.huntQuery.value = value;
+        ui.huntQuery.dispatchEvent(new Event("input", { bubbles: true }));
+        ui.huntQuery.dispatchEvent(new Event("change", { bubbles: true }));
+        if (runner.huntQuery !== value) {
+          if (runner.huntMode) clearHuntTarget();
+          runner.huntQuery = value;
+        }
+        return true;
+      }
+
       function handleDropLeaderboardClick(event) {
         const button = event.target && event.target.closest ? event.target.closest(".crgr-drop-name") : null;
         if (!button || !ui.dropList || !ui.dropList.contains(button) || !button.dataset.copyName) return;
         const name = button.dataset.copyName;
+        fillHuntQueryFromLeaderboard(name);
         copyText(name)
           .then(() => {
-            runner.lastAction = "已复制用户名：" + name;
-            ui.dropRefresh.textContent = "已复制 " + formatClock(Date.now());
+            runner.lastAction = "已复制并填入追杀用户名：" + name;
+            runner.lastError = "";
+            ui.dropRefresh.textContent = "已填入 " + formatClock(Date.now());
             renderStatus();
           })
           .catch(err => {
+            runner.lastAction = "已填入追杀用户名：" + name;
             runner.lastError = "复制用户名失败：" + String(err && err.message || err);
             renderStatus();
           });
+      }
+
+      function scheduleEntryDropLeaderboardRefresh() {
+        if (runner.dropLeaderboardEntryRefreshScheduled || !getMe()) return;
+        runner.dropLeaderboardEntryRefreshScheduled = true;
+        runner.dropLeaderboardEntryTimer = window.setTimeout(() => {
+          runner.dropLeaderboardEntryTimer = 0;
+          renderDropLeaderboard();
+          if (ui.dropRefresh) ui.dropRefresh.textContent = "进入刷新 " + formatClock(Date.now());
+        }, DROP_LEADERBOARD_ENTRY_REFRESH_DELAY_MS);
       }
 
       function renderAttackLockList(me) {
@@ -3282,6 +3311,7 @@
         if (runner.statusTimer) clearInterval(runner.statusTimer);
         if (runner.sidebarSafetyTimer) clearInterval(runner.sidebarSafetyTimer);
         if (runner.dropLeaderboardTimer) clearInterval(runner.dropLeaderboardTimer);
+        if (runner.dropLeaderboardEntryTimer) clearTimeout(runner.dropLeaderboardEntryTimer);
         if (runner.lineRaf) {
           window.cancelAnimationFrame(runner.lineRaf);
           runner.lineRaf = 0;
@@ -3354,6 +3384,7 @@
 
       function renderStatus() {
         const s = snapshot();
+        scheduleEntryDropLeaderboardRefresh();
         renderAttackLockList(getMe());
         root.classList.toggle("running", !!s.running);
         ui.mode.textContent = s.combatMode ? "COMBAT" : s.huntMode ? "HUNT" : (s.running ? "ACTIVE" : "STANDBY");
