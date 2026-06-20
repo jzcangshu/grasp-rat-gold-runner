@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Grasp Rat Gold Runner
 // @namespace    https://grasp-rat-game.h-e.top/
-// @version      1.7.2
+// @version      1.7.3
 // @description  Auto collect coin drops with HP-drop leave safety and combat dodge support.
 // @match        https://grasp-rat-game.h-e.top/*
 // @run-at       document-end
@@ -761,6 +761,7 @@
         scriptMoveKeys: new Set(),
         lastMoveMode: "idle",
         lastHp: null,
+        stoppedHpBaseline: null,
         lastBalance: null,
         deltaBalance: 0,
         leaves: 0,
@@ -2947,6 +2948,8 @@
         runner.huntMode = false;
         runner.autoFireMode = false;
         runner.autoFireStatus = "OFF";
+        const me = getMe();
+        runner.stoppedHpBaseline = me ? Number(me.hp || 0) : null;
         clearAutoFireBurst(true);
         clearAttackLock("离开脱战");
         clearHuntTarget();
@@ -2968,6 +2971,32 @@
           push("离开失败：" + runner.lastError);
         }
         renderStatus();
+      }
+
+      function monitorStoppedDamage() {
+        const me = getMe();
+        if (runner.running) {
+          runner.stoppedHpBaseline = me ? Number(me.hp || 0) : null;
+          return false;
+        }
+        if (!me) {
+          runner.stoppedHpBaseline = null;
+          return false;
+        }
+        const hp = Number(me.hp || 0);
+        if (!Number.isFinite(hp)) return false;
+        if (runner.stoppedHpBaseline === null || me.life !== "Alive" || hp <= 0) {
+          runner.stoppedHpBaseline = hp;
+          return false;
+        }
+        if (hp < runner.stoppedHpBaseline) {
+          const previousHp = runner.stoppedHpBaseline;
+          runner.stoppedHpBaseline = hp;
+          clickLeave("停止模式血量下降 " + previousHp + " -> " + hp);
+          return true;
+        }
+        if (hp > runner.stoppedHpBaseline) runner.stoppedHpBaseline = hp;
+        return false;
       }
 
       function setStepInterval(ms) {
@@ -3268,6 +3297,7 @@
         runner.running = true;
         runner.startedAt = Date.now();
         runner.lastHp = me ? Number(me.hp || 0) : null;
+        runner.stoppedHpBaseline = runner.lastHp;
         runner.lastBalance = me ? Number(me.external_balance_snapshot || 0) : null;
         runner.hourlyLimitLeaveTriggered = false;
         clearCoinRoute();
@@ -3299,6 +3329,8 @@
           runner.timer = 0;
         }
         runner.tickMs = STEP_TICK_MS;
+        const me = getMe();
+        runner.stoppedHpBaseline = me ? Number(me.hp || 0) : null;
         stopMove();
         setDanger(false);
         push("已停止" + (reason ? "：" + reason : ""));
@@ -3383,6 +3415,7 @@
       }
 
       function renderStatus() {
+        monitorStoppedDamage();
         const s = snapshot();
         scheduleEntryDropLeaderboardRefresh();
         renderAttackLockList(getMe());

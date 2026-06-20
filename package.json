@@ -1,6 +1,6 @@
 {
   "name": "grasp-rat-gold-runner",
-  "version": "1.7.2",
+  "version": "1.7.3",
   "private": true,
   "description": "Tampermonkey userscripts for Grasp Rat Game desktop and mobile coin collection automation.",
   "scripts": {
